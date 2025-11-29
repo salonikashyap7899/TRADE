@@ -123,20 +123,20 @@ def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
     sym_count = stats.get("by_symbol", {}).get(symbol, 0)
     
     # ... (Info Text formatting remains the same) ...
-    info_text = f"**UNUTILIZED CAPITAL:** ${unutilized_capital:,.2f}<br>"
-    info_text += f"**RISK AMOUNT:** ${risk_amount:,.2f} ({RISK_PERCENT:.2f}%)<br><br>"
+    info_text = f"UNUTILIZED CAPITAL: ${unutilized_capital:,.2f}<br>"
+    info_text += f"RISK AMOUNT: ${risk_amount:,.2f} ({RISK_PERCENT:.2f}%)<br><br>"
     
     if sl_type == "SL Points":
         sl_percent_movement = (distance / entry) * 100.0
         info_text += f"SL Distance: {distance:.8f} points<br>"
         info_text += f"SL % Movement: {sl_percent_movement:.4f}%<br>"
         info_text += f"SL Points (w/ Buffer): {distance + DEFAULT_SL_POINTS_BUFFER:.8f}<br>"
-        info_text += f"**MAX LEVERAGE:** <span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span><br>"
+        info_text += f"MAX LEVERAGE:<span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span><br>"
         info_text += f"Position Notional: ${notional:,.2f}<br>"
     elif sl_type == "SL % Movement":
         info_text += f"SL Distance: {distance:.8f} points<br>"
         info_text += f"SL % (w/ Buffer): {sl_value + DEFAULT_SL_PERCENT_BUFFER:.2f}%<br>"
-        info_text += f"**MAX LEVERAGE:** <span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span><br>"
+        info_text += f"MAX LEVERAGE: <span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span><br>"
         info_text += f"Position Notional: ${notional:,.2f}<br>"
 
     info_text += f"<br>DAILY LIMIT: {total}/{DAILY_MAX_TRADES} trades used. Symbol ({symbol}) limit: {sym_count}/{DAILY_MAX_PER_SYMBOL} used."
