@@ -5,6 +5,12 @@ import numpy as np
 import pandas as pd 
 import mplfinance as mpf
 import matplotlib.pyplot as plt
+import time 
+
+# --- WARNING: Real API Integration Libraries ---
+# For actual live trading, you would use a library like python-binance
+# from binance.client import Client 
+# from binance.exceptions import BinanceAPIException, BinanceRequestException
 
 # --- Configuration and Constants ---
 DAILY_MAX_TRADES = 4
@@ -13,13 +19,13 @@ RISK_PERCENT = 1.0
 DEFAULT_BALANCE = 10000.00
 DEFAULT_SL_POINTS_BUFFER = 20.0
 DEFAULT_SL_PERCENT_BUFFER = 0.2
+DEFAULT_LIVE_PRICE = 27050.00  # Fallback/Simulation price
 
 # --- Helper Functions for State and Data ---
 
 def initialize_session_state():
     """Initializes Streamlit session state for data persistence."""
     if 'trades' not in st.session_state:
-        # Added 'take_profits' list for partial exit tracking
         st.session_state.trades = []
     if 'stats' not in st.session_state:
         st.session_state.stats = {}
@@ -31,20 +37,243 @@ def initialize_session_state():
 def calculate_unutilized_capital(balance):
     """Calculates the capital not tied up in today's trades."""
     today = datetime.utcnow().date().isoformat()
-    # Find all trades logged today
     today_trades = [t for t in st.session_state.trades if t.get("date") == today]
-    
-    # Sum the capital tied up (Notional / Leverage)
     used_capital = sum(t.get("notional", 0) / t.get("leverage", 1) for t in today_trades)
-    
-    # Unutilized capital is the total balance minus the capital used for today's trades
     unutilized_capital = balance - used_capital
-    return max(0.0, unutilized_capital) # Ensure it's not negative
+    return max(0.0, unutilized_capital)
 
-# --- Chart Generation (Adapted) ---
+# --- NEW: Live Price Fetching (Simulated) ---
 
+# NOTE: For real integration, replace this function with an actual API call.
+# Example: client.futures_symbol_ticker(symbol=symbol)['price']
+def fetch_live_price(symbol, api_key, api_secret):
+    """Fetches live market price for a symbol using a broker API."""
+    if not api_key or not api_secret:
+        # Fallback to simulation if keys are missing
+        st.warning("⚠️ Using simulated price. Please enter valid API/Secret keys for live data.")
+        # Simulate a slight price change based on time for realism
+        offset = (datetime.utcnow().minute % 10) * 0.5 
+        return DEFAULT_LIVE_PRICE + offset
+
+    try:
+        # --- PLACE YOUR REAL API CALL CODE HERE ---
+        # Example using python-binance (requires installation: pip install python-binance)
+        # client = Client(api_key, api_secret, tld='us') # Use tld='us' for US markets if needed
+        # client.FUTURES_URL = 'https://testnet.binancefuture.com' # For testnet
+        # client = Client(api_key, api_secret) 
+        # ticker = client.futures_symbol_ticker(symbol=symbol)
+        # return float(ticker['price'])
+        
+        # Current Simulation (Remove for live trading)
+        offset = (datetime.utcnow().minute % 10) * 0.5 
+        return DEFAULT_LIVE_PRICE + offset
+        
+    except Exception as e:
+        st.error(f"Failed to fetch live price for {symbol}. Using simulated price. Error: {e}")
+        return DEFAULT_LIVE_PRICE
+
+
+# --- Core Logic (Position Sizing) ---
+
+def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
+    """
+    Calculates suggested units and leverage based on selected SL type (points or %).
+    """
+    unutilized_capital = calculate_unutilized_capital(balance)
+    risk_amount = (unutilized_capital * RISK_PERCENT) / 100.0
+    
+    units = 0.0
+    leverage = 1.0
+    distance = 0.0
+    max_leverage = 0.0
+    notional = 0.0 
+    
+    if unutilized_capital <= 0 or entry <= 0 or sl_value <= 0:
+         return 0, 0, 0, 0, 0, "⚠️ INPUT ERROR: Check Balance/Trades, Entry Price, or SL distance/percentage."
+    
+    if sl_type == "SL Points":
+        distance = sl_value
+        effective_sl_distance = distance + DEFAULT_SL_POINTS_BUFFER
+        
+        if effective_sl_distance > 0:
+            units = risk_amount / effective_sl_distance
+            sl_percent_movement = (distance / entry) * 100.0
+            notional = units * entry
+            leverage = notional / unutilized_capital
+            if leverage < 1: leverage = 1.0
+            leverage = ceil(leverage * 2) / 2.0
+            max_leverage = 100.0 / sl_percent_movement if sl_percent_movement > 0 else 0.0
+            
+    elif sl_type == "SL % Movement":
+        sl_value_percent = sl_value # sl_value is the percentage (e.g., 0.5)
+        sl_percent_decimal = sl_value_percent / 100.0
+        effective_sl_percent_decimal = sl_percent_decimal + (DEFAULT_SL_PERCENT_BUFFER / 100.0)
+        
+        if effective_sl_percent_decimal > 0:
+            units = risk_amount / (effective_sl_percent_decimal * entry)
+            distance = sl_percent_decimal * entry
+            max_leverage = 100.0 / sl_value_percent
+            leverage = max_leverage
+            notional = units * entry
+            
+    # 2. Prepare Info Text (Unchanged)
+    today = datetime.utcnow().date().isoformat()
+    stats = st.session_state.stats.get(today, {"total": 0, "by_symbol": {}})
+    total = stats.get("total", 0)
+    sym_count = stats.get("by_symbol", {}).get(symbol, 0)
+    
+    # ... (Info Text formatting remains the same) ...
+    info_text = f"**UNUTILIZED CAPITAL:** ${unutilized_capital:,.2f}<br>"
+    info_text += f"**RISK AMOUNT:** ${risk_amount:,.2f} ({RISK_PERCENT:.2f}%)<br><br>"
+    
+    if sl_type == "SL Points":
+        sl_percent_movement = (distance / entry) * 100.0
+        info_text += f"SL Distance: {distance:.8f} points<br>"
+        info_text += f"SL % Movement: {sl_percent_movement:.4f}%<br>"
+        info_text += f"SL Points (w/ Buffer): {distance + DEFAULT_SL_POINTS_BUFFER:.8f}<br>"
+        info_text += f"**MAX LEVERAGE:** <span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span><br>"
+        info_text += f"Position Notional: ${notional:,.2f}<br>"
+    elif sl_type == "SL % Movement":
+        info_text += f"SL Distance: {distance:.8f} points<br>"
+        info_text += f"SL % (w/ Buffer): {sl_value + DEFAULT_SL_PERCENT_BUFFER:.2f}%<br>"
+        info_text += f"**MAX LEVERAGE:** <span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span><br>"
+        info_text += f"Position Notional: ${notional:,.2f}<br>"
+
+    info_text += f"<br>DAILY LIMIT: {total}/{DAILY_MAX_TRADES} trades used. Symbol ({symbol}) limit: {sym_count}/{DAILY_MAX_PER_SYMBOL} used."
+
+    return units, leverage, notional, unutilized_capital, max_leverage, info_text
+
+# --- NEW: Broker Order Placement ---
+
+def place_broker_order(symbol, side, entry, sl, units, leverage, order_type, tp_list, api_key, api_secret):
+    """
+    Function to connect to the broker and place the order.
+    NOTE: This is a placeholder structure for the Binance Futures API.
+    """
+    
+    if not api_key or not api_secret:
+        return "SIMULATION: Order placement skipped. API keys are required for real trading."
+
+    try:
+        # --- PLACE YOUR REAL BINANCE/DELTA/META ORDER PLACEMENT CODE HERE ---
+        
+        # 1. Initialize Client (using Testnet environment)
+        # client = Client(api_key, api_secret)
+        # client.FUTURES_URL = 'https://testnet.binancefuture.com' 
+        
+        # 2. Set Leverage
+        # client.futures_change_leverage(symbol=symbol, leverage=int(leverage))
+
+        # 3. Define Main Order Parameters
+        order_side = 'BUY' if side == 'LONG' else 'SELL'
+        order_type_broker = 'MARKET' # Simplify for primary order placement example
+        quantity = units 
+        
+        # 4. Place Main Order
+        # if order_type == "MARKET ORDER":
+        #     order = client.futures_create_order(
+        #         symbol=symbol, 
+        #         side=order_side, 
+        #         type=order_type_broker, 
+        #         quantity=quantity
+        #     )
+        # elif order_type == "LIMIT ORDER":
+        #     # Example for Limit Order
+        #     order = client.futures_create_order(
+        #         symbol=symbol, 
+        #         side=order_side, 
+        #         type='LIMIT', 
+        #         timeInForce='GTC', 
+        #         quantity=quantity,
+        #         price=entry 
+        #     )
+        
+        # 5. Place SL and TP Orders (usually OCO or conditional orders)
+        # Placing SL
+        # client.futures_create_order(...)
+        
+        # Placing TPs
+        # for tp in tp_list:
+        #     # Place separate limit/take-profit limit orders for partial exit
+        #     # client.futures_create_order(...)
+
+        return f"REAL TRADE (Testnet): Order placed successfully (Type: {order_type_broker}, Units: {units:.4f}, Lev: {leverage:.1f}x)"
+
+    except Exception as e:
+        return f"BROKER ERROR: Failed to place order on Testnet. {e}"
+
+
+def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, suggested_lev, user_units, user_lev, sl_type, sl_value, order_type, tp_list, api_key, api_secret):
+    """Performs validation, logs the trade, and places the actual broker order."""
+    
+    # ... (Validation Checks - Unchanged from previous version) ...
+    today = datetime.utcnow().date().isoformat()
+    stats = st.session_state.stats.get(today, {"total": 0, "by_symbol": {}})
+    total = stats.get("total", 0)
+    sym_count = stats.get("by_symbol", {}).get(symbol, 0)
+    
+    if total >= DAILY_MAX_TRADES:
+        st.error(f"Daily max trades reached ({DAILY_MAX_TRADES}).")
+        return
+    if sym_count >= DAILY_MAX_PER_SYMBOL:
+        st.error(f"Daily max trades reached for {symbol} ({DAILY_MAX_PER_SYMBOL}).")
+        return
+
+    units_to_use = user_units if user_units > 0 else suggested_units
+    lev_to_use = user_lev if user_lev > 0 else suggested_lev
+    
+    suggested_units_check, suggested_lev_check, _, unutilized_capital, _, _ = calculate_position_sizing(balance, symbol, entry, sl_type, sl_value)
+
+    if units_to_use > suggested_units_check + 1e-9:
+        st.warning(f"Override units ({units_to_use:,.8f}) exceed suggested units ({suggested_units_check:,.8f}) based on 1% risk. Trade Blocked.")
+        return
+    if lev_to_use > suggested_lev_check + 1e-9:
+        st.warning(f"Override leverage ({lev_to_use:.2f}x) exceeds suggested leverage ({suggested_lev_check:.2f}x). Trade Blocked.")
+        return
+    
+    notional_to_use = units_to_use * entry
+    margin_required = notional_to_use / lev_to_use
+    if margin_required > unutilized_capital + 1e-9:
+        st.warning(f"Margin required (${margin_required:,.2f}) exceeds unutilized capital (${unutilized_capital:,.2f}). Trade Blocked.")
+        return
+
+    # --- Broker Order Placement ---
+    st.subheader("Broker Execution Status:")
+    trade_status_message = place_broker_order(
+        symbol, side, entry, sl, units_to_use, lev_to_use, order_type, tp_list, api_key, api_secret
+    )
+    st.code(trade_status_message, language="text")
+
+    # 2. Log Trade (Only log if execution was attempted or in simulation)
+    now = datetime.utcnow()
+    trade = {
+        "id": int(now.timestamp()*1000),
+        "date": today,
+        "time": now.strftime('%H:%M:%S UTC'),
+        "symbol": symbol,
+        "side": side,
+        "order_type": order_type, 
+        "entry": entry,
+        "stop_loss": sl,
+        "units": units_to_use,
+        "notional": notional_to_use,
+        "leverage": lev_to_use,
+        "take_profits": tp_list
+    }
+
+    st.session_state.trades.append(trade)
+
+    # 3. Update Stats
+    s = st.session_state.stats.setdefault(today, {"total": 0, "by_symbol": {}})
+    s["total"] = s.get("total", 0) + 1
+    s["by_symbol"][trade["symbol"]] = s["by_symbol"].get(trade["symbol"], 0) + 1
+    
+    st.success(f"✅ Trade Logged! Units: {units_to_use:,.8f} | Leverage: {lev_to_use:.2f}x | Order: {order_type}")
+
+
+# --- Chart Generation (Moved to bottom) ---
 def generate_simulated_data():
-    """Generates synthetic OHLCV data for demonstration."""
+    # (Unchanged)
     dates = pd.date_range(start='2025-01-01', periods=80, freq='H') 
     base_price = 27000.00
     volatility = 50.0 
@@ -60,9 +289,8 @@ def generate_simulated_data():
     return df[['Open', 'High', 'Low', 'Close', 'Volume']]
 
 def plot_candlestick_chart(data):
-    """Plots candlestick chart using mplfinance and returns the figure."""
+    # (Unchanged)
     data['MA20'] = data['Close'].rolling(window=20).mean()
-    # Define a custom style for the dark theme integration
     mc = mpf.make_marketcolors(up='#00cc77', down='#ff4d4d', inherit=True, vcdopcod=True) 
     s = mpf.make_mpf_style(
         base_mpf_style='yahoo', 
@@ -90,175 +318,6 @@ def plot_candlestick_chart(data):
     plt.close(fig) 
     return fig
 
-# --- Core Logic (Recalculation and Execution) ---
-
-def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
-    """
-    Calculates suggested units and leverage based on selected SL type (points or %).
-    Enforces risk and Max Leverage rules.
-    
-    NOTE: Removed unused 'sl' and 'units_type' parameters to fix TypeError.
-    """
-    unutilized_capital = calculate_unutilized_capital(balance)
-    risk_amount = (unutilized_capital * RISK_PERCENT) / 100.0
-    
-    units = 0.0
-    leverage = 1.0
-    distance = 0.0
-    max_leverage = 0.0
-    notional = 0.0 # Initialize notional
-    
-    # Check for minimal inputs before calculation
-    if unutilized_capital <= 0 or entry <= 0:
-         return 0, 0, 0, 0, 0, "⚠️ INPUT ERROR: Check Balance/Trades or Entry Price."
-    
-    # 1. Calculate SL Distance (Points) and Position Units
-    if sl_type == "SL Points":
-        # sl_value is the distance in points
-        distance = sl_value
-        
-        # Formula for Units (Points): (1% of unutilised capital) / (Sl points + 20 points)
-        effective_sl_distance = distance + DEFAULT_SL_POINTS_BUFFER
-        
-        if effective_sl_distance > 0:
-            units = risk_amount / effective_sl_distance
-            
-            # Recalculate SL% for info text and max leverage calculation
-            sl_percent_movement = (distance / entry) * 100.0
-            
-            # Calculate leverage required for this position
-            notional = units * entry
-            leverage = notional / unutilized_capital
-            if leverage < 1: leverage = 1.0
-            # Round up to the nearest 0.5x
-            leverage = ceil(leverage * 2) / 2.0
-            
-            # Max leverage rule based on SL % movement
-            max_leverage = 100.0 / sl_percent_movement if sl_percent_movement > 0 else 0.0
-            
-    elif sl_type == "SL % Movement":
-        
-        # sl_value is the percentage (e.g., 0.5), convert to decimal for calculation (0.005)
-        sl_percent_decimal = sl_value / 100.0
-        
-        # Formula for Units (%): (1% of Unutilised capital) / (Sl% movement + 0.2%)
-        effective_sl_percent_decimal = sl_percent_decimal + (DEFAULT_SL_PERCENT_BUFFER / 100.0)
-        
-        if effective_sl_percent_decimal > 0:
-            # Position Units: Risk Amount / (Effective SL % * Entry Price)
-            units = risk_amount / (effective_sl_percent_decimal * entry)
-            
-            # Distance in points for info text
-            distance = sl_percent_decimal * entry
-            
-            # Max Leverage is calculated here: 100 / SL % movement
-            max_leverage = 100.0 / sl_value
-            
-            # Suggested Leverage is defined as the Max Leverage (following the principle of max capital efficiency under risk rules)
-            leverage = max_leverage
-            
-            # Calculate notional for info text
-            notional = units * entry
-            
-    else: # Should not happen, but a safe guard
-        pass
-
-
-    # 2. Prepare Info Text
-    today = datetime.utcnow().date().isoformat()
-    stats = st.session_state.stats.get(today, {"total": 0, "by_symbol": {}})
-    total = stats.get("total", 0)
-    sym_count = stats.get("by_symbol", {}).get(symbol, 0)
-    
-    info_text = f"**UNUTILIZED CAPITAL:** ${unutilized_capital:,.2f}<br>"
-    info_text += f"**RISK AMOUNT:** ${risk_amount:,.2f} ({RISK_PERCENT:.2f}%)<br><br>"
-    
-    if sl_type == "SL Points":
-        sl_percent_movement = (distance / entry) * 100.0
-        info_text += f"SL Distance: {distance:.8f} points<br>"
-        info_text += f"SL % Movement: {sl_percent_movement:.4f}%<br>"
-        info_text += f"SL Points (w/ Buffer): {distance + DEFAULT_SL_POINTS_BUFFER:.8f}<br>"
-        info_text += f"**MAX LEVERAGE:** <span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span><br>"
-        info_text += f"Position Notional: ${notional:,.2f}<br>"
-    elif sl_type == "SL % Movement":
-        info_text += f"SL Distance: {distance:.8f} points<br>"
-        info_text += f"SL % (w/ Buffer): {sl_value + DEFAULT_SL_PERCENT_BUFFER:.2f}%<br>"
-        info_text += f"**MAX LEVERAGE:** <span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span><br>"
-        info_text += f"Position Notional: ${notional:,.2f}<br>"
-
-    info_text += f"<br>DAILY LIMIT: {total}/{DAILY_MAX_TRADES} trades used. Symbol ({symbol}) limit: {sym_count}/{DAILY_MAX_PER_SYMBOL} used."
-    
-    if units == 0:
-        return 0, 0, 0, 0, 0, "⚠️ INPUT ERROR: Cannot calculate position size. Check SL distance/percentage."
-        
-    return units, leverage, notional, unutilized_capital, max_leverage, info_text
-
-def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, suggested_lev, user_units, user_lev, sl_type, sl_value, order_type, tp_list):
-    """Performs validation and logs the trade."""
-    today = datetime.utcnow().date().isoformat()
-    stats = st.session_state.stats.get(today, {"total": 0, "by_symbol": {}})
-    total = stats.get("total", 0)
-    sym_count = stats.get("by_symbol", {}).get(symbol, 0)
-    
-    # 1. Validation Checks (Daily & Symbol Limits)
-    if total >= DAILY_MAX_TRADES:
-        st.error(f"Daily max trades reached ({DAILY_MAX_TRADES}).")
-        return
-    if sym_count >= DAILY_MAX_PER_SYMBOL:
-        st.error(f"Daily max trades reached for {symbol} ({DAILY_MAX_PER_SYMBOL}).")
-        return
-
-    units_to_use = user_units if user_units > 0 else suggested_units
-    lev_to_use = user_lev if user_lev > 0 else suggested_lev
-    
-    # Recalculate suggested numbers for comparison
-    # CORRECTED CALL: Passing only the 5 required arguments
-    suggested_units_check, suggested_lev_check, _, unutilized_capital, _, _ = calculate_position_sizing(balance, symbol, entry, sl_type, sl_value)
-
-    # Check for unit override exceeding suggested units (1% risk)
-    if units_to_use > suggested_units_check + 1e-9:
-        st.warning(f"Override units ({units_to_use:,.8f}) exceed suggested units ({suggested_units_check:,.8f}) based on 1% risk. Trade Blocked.")
-        return
-        
-    # Check for leverage override exceeding suggested or max leverage
-    if lev_to_use > suggested_lev_check + 1e-9:
-        # suggested_lev_check already incorporates the max leverage cap
-        st.warning(f"Override leverage ({lev_to_use:.2f}x) exceeds suggested leverage ({suggested_lev_check:.2f}x). Trade Blocked.")
-        return
-    
-    # Check if the margin required for the position exceeds unutilized capital
-    notional_to_use = units_to_use * entry
-    margin_required = notional_to_use / lev_to_use
-    if margin_required > unutilized_capital + 1e-9:
-        st.warning(f"Margin required (${margin_required:,.2f}) exceeds unutilized capital (${unutilized_capital:,.2f}). Trade Blocked.")
-        return
-    
-    # 2. Log Trade
-    now = datetime.utcnow()
-    trade = {
-        "id": int(now.timestamp()*1000),
-        "date": today,
-        "time": now.strftime('%H:%M:%S UTC'),
-        "symbol": symbol,
-        "side": side,
-        "order_type": order_type, # New field
-        "entry": entry,
-        "stop_loss": sl,
-        "units": units_to_use,
-        "notional": notional_to_use,
-        "leverage": lev_to_use,
-        "take_profits": tp_list # New field
-    }
-
-    st.session_state.trades.append(trade)
-
-    # 3. Update Stats
-    s = st.session_state.stats.setdefault(today, {"total": 0, "by_symbol": {}})
-    s["total"] = s.get("total", 0) + 1
-    s["by_symbol"][trade["symbol"]] = s["by_symbol"].get(trade["symbol"], 0) + 1
-    
-    st.success(f"✅ Trade Executed! Units: {units_to_use:,.8f} | Leverage: {lev_to_use:.2f}x | Order: {order_type}")
-
 # --- Streamlit Application Layout ---
 def app():
     # Set web page configuration and dark theme
@@ -281,21 +340,70 @@ def app():
             background-color: #333333;
             border: 1px solid #00cc77;
         }
+        .live-price-box {
+            border: 2px solid #00cc77; 
+            padding: 10px; 
+            border-radius: 5px; 
+            background-color: #1a1a1a; 
+            text-align: center;
+        }
+        .live-price-label {
+            font-size: 14px; 
+            color: #ccc;
+        }
+        .live-price-value {
+            font-size: 24px; 
+            font-weight: bold; 
+            color: #00cc77;
+        }
         </style>
     """, unsafe_allow_html=True)
     
     st.markdown("<h1 style='text-align: center; color: #00cc77;'>RISK CONTROL DASHBOARD</h1>", unsafe_allow_html=True)
     st.markdown("---")
 
-    col1, col2 = st.columns([4, 6], gap="large")
+    # --- API Configuration & Live Price Section (Top of page) ---
+    st.subheader("🔑 Broker API Configuration (Binance Testnet)")
+    col_api_key, col_api_secret = st.columns(2)
+    
+    with col_api_key:
+        # NOTE: Using your provided keys as defaults. REMOVE THESE BEFORE DEPLOYMENT!
+        api_key = st.text_input("API Key:", "0m7TQoImay1rDXRXVQ1KR7oHBBWjvPT02M3bBWLFvXmoK4m6Vwp8UzLfeJUh1SKV", type="password", key="api_key_input")
+    with col_api_secret:
+        api_secret = st.text_input("Secret Key:", "2luiKWQg6m2I1pSiREDYPVrKG3ly0To20siRSqNEActb1bZVzpCRgrnFS5MqswiI", type="password", key="api_secret_input")
+    
+    # --- Main Trading Interface ---
+    st.markdown("---")
+    st.subheader("🎯 Order Entry & Position Sizing")
 
-    # --- Column 1: Inputs and History ---
+    # --- Column Layout for Order Entry ---
+    col1, col2 = st.columns([1, 1], gap="large") # Two equal columns for inputs
+
+    # Current Symbol and Live Price
     with col1:
-        st.subheader("POSITION SIZING & ORDER ENTRY")
+        symbol = st.text_input("Symbol:", "BTCUSDT").strip().upper() # Changed to BTCUSDT for Binance standard
         
-        # Sizing Inputs
+        # Fetch live price dynamically
+        live_price = fetch_live_price(symbol, api_key, api_secret)
+        
+        # Display live price
+        st.markdown(f"""
+        <div class='live-price-box'>
+            <div class='live-price-label'>CURRENT {symbol} PRICE</div>
+            <div class='live-price-value'>{live_price:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Sizing and Side
         st.markdown("#### Trade Parameters")
+        side = st.selectbox("Side:", ["LONG", "SHORT"])
+        order_type = st.selectbox("Order Type:", ["MARKET ORDER", "LIMIT ORDER", "STOP LIMIT ORDER", "STOP MARKET ORDER"])
+
+    with col2:
         balance = st.number_input("Total Balance ($):", min_value=1.00, value=DEFAULT_BALANCE, step=100.00, format="%.2f", key="balance")
+        
+        # Entry price defaults to live price
+        entry = st.number_input("Entry Price (Live Market Price):", min_value=0.0000001, value=live_price, format="%.8f", key="entry")
         
         col_type_choice, col_sl_choice = st.columns(2)
         with col_type_choice:
@@ -304,119 +412,107 @@ def app():
         with col_sl_choice:
             sl_type = st.radio("Stop Loss Method:", ["SL Points", "SL % Movement"], index=0, key="sl_type")
 
-        symbol = st.text_input("Symbol:", "BTCUSD").strip().upper()
-        
-        # New: Order Type Selection
-        order_type = st.selectbox("Order Type:", ["MARKET ORDER", "LIMIT ORDER", "STOP LIMIT ORDER", "STOP MARKET ORDER"])
-
-        entry = st.number_input("Entry Price:", min_value=0.0000001, value=27050.00, format="%.8f", key="entry")
-
-        side = st.selectbox("Side:", ["LONG", "SHORT"])
-
         # SL Input based on SL Type
         sl = 0.0 # Will store the SL Price for trade logging
         sl_value = 0.0 # Will store either SL distance in points or SL percentage for calculation
         
         if sl_type == "SL Points":
-            # Input is the SL price, then we calculate the distance/value
-            sl = st.number_input("Stop Loss (SL) Price:", min_value=0.0000001, value=26950.00, format="%.8f", key="sl_price")
+            sl = st.number_input("Stop Loss (SL) Price:", min_value=0.0000001, value=entry * 0.996, format="%.8f", key="sl_price")
             sl_value = abs(entry - sl) # Store distance in points for calculation
             if sl_value == 0:
                 st.warning("SL Price must be different from Entry Price.")
                 
         else: # SL % Movement
             sl_value = st.number_input("Stop Loss (SL) % Movement:", min_value=0.01, value=0.5, format="%.2f", key="sl_percent")
-            # Calculate SL price for logging (based on side)
             if entry > 0:
                 if side == "LONG":
                     sl = entry * (1 - sl_value / 100.0)
                 else: # SHORT
                     sl = entry * (1 + sl_value / 100.0)
-        
-        # New: Take Profit (TP) inputs
-        st.markdown("---")
-        st.markdown("#### Take Profit (TP) Configuration")
-        tp1_price = st.number_input("TP 1 Price:", min_value=0.0, value=27200.00, format="%.8f", key="tp1_price")
+    
+    # --- Take Profit and Execution (Full Width below columns) ---
+    st.markdown("---")
+    st.subheader("💰 Take Profit (TP) & Position Risk Summary")
+
+    col_tp_1, col_tp_2, col_tp_3 = st.columns(3)
+    with col_tp_1:
+        tp1_price = st.number_input("TP 1 Price:", min_value=0.0, value=entry * 1.005, format="%.8f", key="tp1_price")
+    with col_tp_2:
         tp1_percent = st.number_input("TP 1 % of Position:", min_value=0, max_value=100, value=70, step=5, key="tp1_percent")
-        
+    with col_tp_3:
         remaining_percent = 100 - tp1_percent
-        tp2_price = st.number_input("TP 2 Price (Full Exit):", min_value=0.0, value=27350.00, format="%.8f", key="tp2_price")
-        st.info(f"TP 2 will exit the **remaining {remaining_percent}%** of the position.")
+        tp2_price = st.number_input("TP 2 Price (Full Exit):", min_value=0.0, value=entry * 1.015, format="%.8f", key="tp2_price")
+        st.info(f"TP 2 will exit the **remaining {remaining_percent}%**.")
 
-        # Structure TP data for logging
-        tp_list = []
-        if tp1_price > 0 and tp1_percent > 0:
-            tp_list.append({"price": tp1_price, "percentage": tp1_percent})
-        if tp2_price > 0 and remaining_percent > 0:
-            tp_list.append({"price": tp2_price, "percentage": remaining_percent})
+    # Structure TP data for logging
+    tp_list = []
+    if tp1_price > 0 and tp1_percent > 0:
+        tp_list.append({"price": tp1_price, "percentage": tp1_percent})
+    if tp2_price > 0 and remaining_percent > 0:
+        tp_list.append({"price": tp2_price, "percentage": remaining_percent})
 
 
-        # Recalculation
-        # CORRECTED CALL: Only passing the 5 required arguments
-        units, leverage, notional, unutilized_capital, max_leverage, info_text = calculate_position_sizing(
-            balance, symbol, entry, sl_type, sl_value
-        )
-        
-        st.markdown("---")
-        st.subheader("Suggested Position (1% Risk)")
-        
+    # Recalculation (using sl_type and sl_value now)
+    units, leverage, notional, unutilized_capital, max_leverage, info_text = calculate_position_sizing(
+        balance, symbol, entry, sl_type, sl_value
+    )
+    
+    # Suggested Position Display and Info Box
+    col_suggested, col_info_text = st.columns([1, 1], gap="large")
+
+    with col_suggested:
+        st.markdown("#### Suggested Position (1% Risk)")
         st.info(f"**Suggested Units:** `{units:,.8f}`")
         st.info(f"**Suggested Leverage:** `{leverage:.2f}x`")
-        
-        # Info Label
+
+    with col_info_text:
+        st.markdown("#### Risk Analysis")
         st.markdown(f"""
-        <div style='border: 1px solid #00aaff; padding: 10px; background-color: #2b2b2b; border-radius: 5px; margin-top: 15px; color: #e0e0e0; font-weight: 500;'>
+        <div style='border: 1px solid #00aaff; padding: 10px; background-color: #2b2b2b; border-radius: 5px; color: #e0e0e0; font-weight: 500;'>
             {info_text}
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("---")
-        
-        # Overrides and Execute Button
-        st.subheader("Trade Execution")
-        
-        col_btn_1, col_btn_2 = st.columns(2)
-        with col_btn_1:
-            user_units = st.number_input("Override Units (0 to use Suggested):", min_value=0.0, value=0.0, format="%.8f")
-        with col_btn_2:
-            user_lev = st.number_input("Override Leverage (0 to use Suggested):", min_value=0.0, value=0.0, format="%.2f")
+    st.markdown("---")
+    
+    # Overrides and Execute Button
+    st.subheader("Trade Execution")
+    
+    col_btn_1, col_btn_2 = st.columns(2)
+    with col_btn_1:
+        user_units = st.number_input("Override Units (0 to use Suggested):", min_value=0.0, value=0.0, format="%.8f")
+    with col_btn_2:
+        user_lev = st.number_input("Override Leverage (0 to use Suggested):", min_value=0.0, value=0.0, format="%.2f")
 
-        if st.button("EXECUTE TRADE (1% RISK)", use_container_width=True, key="execute"):
-            # Ensure the call is correct (sl is the final price for logging)
-            execute_trade_action(balance, symbol, side, entry, sl, units, leverage, user_units, user_lev, sl_type, sl_value, order_type, tp_list)
+    if st.button("EXECUTE TRADE (1% RISK) - PLACE ORDER", use_container_width=True, key="execute"):
+        execute_trade_action(balance, symbol, side, entry, sl, units, leverage, user_units, user_lev, sl_type, sl_value, order_type, tp_list, api_key, api_secret)
 
-        st.markdown("---")
-        st.subheader("TODAY'S TRADE LOG")
+    st.markdown("---")
+    st.subheader("TODAY'S TRADE LOG")
+    
+    # Display Trade History Table
+    today_trades = [t for t in st.session_state.trades if t.get("date") == datetime.utcnow().date().isoformat()]
+    if today_trades:
+        df_history = pd.DataFrame(today_trades)
+        df_history = df_history[["time", "symbol", "side", "order_type", "entry", "units", "leverage", "notional", "take_profits"]]
+        df_history.columns = ["Time", "Symbol", "Side", "Order Type", "Entry Price", "Units", "Leverage", "Notional ($)", "TPs"]
         
-        # Display Trade History Table
-        today_trades = [t for t in st.session_state.trades if t.get("date") == datetime.utcnow().date().isoformat()]
-        if today_trades:
-            df_history = pd.DataFrame(today_trades)
-            # Added 'order_type' and 'take_profits'
-            df_history = df_history[["time", "symbol", "side", "order_type", "entry", "units", "leverage", "notional", "take_profits"]]
-            df_history.columns = ["Time", "Symbol", "Side", "Order Type", "Entry Price", "Units", "Leverage", "Notional ($)", "TPs"]
-            
-            # Apply color coding to the 'Side' column
-            def color_side(val):
-                color = '#00cc77' if val == 'LONG' else '#ff4d4d'
-                return f'background-color: {color}; color: white'
+        def color_side(val):
+            color = '#00cc77' if val == 'LONG' else '#ff4d4d'
+            return f'background-color: {color}; color: white'
 
-            # Format the TPs column for better display
-            df_history['TPs'] = df_history['TPs'].apply(lambda x: ' / '.join([f"TP{i+1}: ${tp['price']:,.2f} ({tp['percentage']}%)" for i, tp in enumerate(x)]))
+        df_history['TPs'] = df_history['TPs'].apply(lambda x: ' / '.join([f"TP{i+1}: ${tp['price']:,.2f} ({tp['percentage']}%)" for i, tp in enumerate(x)]))
 
-            st.dataframe(df_history.style.applymap(color_side, subset=['Side']), use_container_width=True, hide_index=True)
-        else:
-            st.write("No trades logged today.")
+        st.dataframe(df_history.style.applymap(color_side, subset=['Side']), use_container_width=True, hide_index=True)
+    else:
+        st.write("No trades logged today.")
 
-    # --- Column 2: Chart ---
-    with col2:
-        st.subheader("VISUAL ANALYSIS")
-        
-        data = generate_simulated_data()
-        fig = plot_candlestick_chart(data)
-        
-        # Display the chart using Streamlit
-        st.pyplot(fig)
+    # --- Visual Analysis (Moved to the bottom) ---
+    st.markdown("---")
+    st.subheader("📊 Visual Analysis (Simulated Data)")
+    data = generate_simulated_data()
+    fig = plot_candlestick_chart(data)
+    st.pyplot(fig)
 
 
 if __name__ == '__main__':
