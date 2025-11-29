@@ -19,6 +19,7 @@ DEFAULT_SL_PERCENT_BUFFER = 0.2
 def initialize_session_state():
     """Initializes Streamlit session state for data persistence."""
     if 'trades' not in st.session_state:
+        # Added 'take_profits' list for partial exit tracking
         st.session_state.trades = []
     if 'stats' not in st.session_state:
         st.session_state.stats = {}
@@ -91,7 +92,7 @@ def plot_candlestick_chart(data):
 
 # --- Core Logic (Recalculation and Execution) ---
 
-def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value, units_type):
+def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value):
     """
     Calculates suggested units and leverage based on selected SL type (points or %).
     Enforces risk and Max Leverage rules.
@@ -110,13 +111,17 @@ def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value, uni
     
     # 1. Calculate SL Distance (Points) and Position Units
     if sl_type == "SL Points":
-        distance = abs(entry - sl)
+        # sl_value is the distance in points
+        distance = sl_value
         
-        # Formula: (1% of unutilised capital) / (Sl points + 20 points)
+        # Formula for Units (Points): (1% of unutilised capital) / (Sl points + 20 points)
         effective_sl_distance = distance + DEFAULT_SL_POINTS_BUFFER
         
         if effective_sl_distance > 0:
             units = risk_amount / effective_sl_distance
+            
+            # Recalculate SL% for info text and max leverage calculation
+            sl_percent_movement = (distance / entry) * 100.0
             
             # Calculate leverage required for this position
             notional = units * entry
@@ -125,22 +130,28 @@ def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value, uni
             # Round up to the nearest 0.5x
             leverage = ceil(leverage * 2) / 2.0
             
+            # Max leverage rule based on SL % movement
+            max_leverage = 100.0 / sl_percent_movement if sl_percent_movement > 0 else 0.0
+            
     elif sl_type == "SL % Movement":
         
-        # SL Value is a percentage (e.g., 0.5), convert to decimal for calculation (0.005)
+        # sl_value is the percentage (e.g., 0.5), convert to decimal for calculation (0.005)
         sl_percent_decimal = sl_value / 100.0
         
-        # Formula: (1% of Unutilised capital) / (Sl% movement + 0.2%)
+        # Formula for Units (%): (1% of Unutilised capital) / (Sl% movement + 0.2%)
         effective_sl_percent_decimal = sl_percent_decimal + (DEFAULT_SL_PERCENT_BUFFER / 100.0)
         
         if effective_sl_percent_decimal > 0:
             # Position Units: Risk Amount / (Effective SL % * Entry Price)
             units = risk_amount / (effective_sl_percent_decimal * entry)
             
+            # Distance in points for info text
+            distance = sl_percent_decimal * entry
+            
             # Max Leverage is calculated here: 100 / SL % movement
             max_leverage = 100.0 / sl_value
             
-            # Suggested Leverage is defined as the Max Leverage
+            # Suggested Leverage is defined as the Max Leverage (following the principle of max capital efficiency under risk rules)
             leverage = max_leverage
             
             # Calculate notional for info text
@@ -163,10 +174,14 @@ def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value, uni
     info_text += f"**RISK AMOUNT:** ${risk_amount:,.2f} ({RISK_PERCENT:.2f}%)<br><br>"
     
     if sl_type == "SL Points":
+        sl_percent_movement = (distance / entry) * 100.0
         info_text += f"SL Distance: {distance:.8f} points<br>"
+        info_text += f"SL % Movement: {sl_percent_movement:.4f}%<br>"
         info_text += f"SL Points (w/ Buffer): {distance + DEFAULT_SL_POINTS_BUFFER:.8f}<br>"
+        info_text += f"**MAX LEVERAGE:** <span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span><br>"
         info_text += f"Position Notional: ${notional:,.2f}<br>"
     elif sl_type == "SL % Movement":
+        info_text += f"SL Distance: {distance:.8f} points<br>"
         info_text += f"SL % (w/ Buffer): {sl_value + DEFAULT_SL_PERCENT_BUFFER:.2f}%<br>"
         info_text += f"**MAX LEVERAGE:** <span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span><br>"
         info_text += f"Position Notional: ${notional:,.2f}<br>"
@@ -178,7 +193,7 @@ def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value, uni
         
     return units, leverage, notional, unutilized_capital, max_leverage, info_text
 
-def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, suggested_lev, user_units, user_lev, sl_type, sl_value):
+def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, suggested_lev, user_units, user_lev, sl_type, sl_value, order_type, tp_list):
     """Performs validation and logs the trade."""
     today = datetime.utcnow().date().isoformat()
     stats = st.session_state.stats.get(today, {"total": 0, "by_symbol": {}})
@@ -197,7 +212,7 @@ def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, sugg
     lev_to_use = user_lev if user_lev > 0 else suggested_lev
     
     # Recalculate suggested numbers for comparison
-    suggested_units_check, suggested_lev_check, _, unutilized_capital, _, _ = calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value, "")
+    suggested_units_check, suggested_lev_check, _, unutilized_capital, _, _ = calculate_position_sizing(balance, symbol, entry, sl_type, sl_value)
 
     # Check for unit override exceeding suggested units (1% risk)
     if units_to_use > suggested_units_check + 1e-9:
@@ -225,11 +240,13 @@ def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, sugg
         "time": now.strftime('%H:%M:%S UTC'),
         "symbol": symbol,
         "side": side,
+        "order_type": order_type, # New field
         "entry": entry,
         "stop_loss": sl,
         "units": units_to_use,
         "notional": notional_to_use,
-        "leverage": lev_to_use
+        "leverage": lev_to_use,
+        "take_profits": tp_list # New field
     }
 
     st.session_state.trades.append(trade)
@@ -239,7 +256,7 @@ def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, sugg
     s["total"] = s.get("total", 0) + 1
     s["by_symbol"][trade["symbol"]] = s["by_symbol"].get(trade["symbol"], 0) + 1
     
-    st.success(f"✅ Trade Executed! Units: {units_to_use:,.8f} | Leverage: {lev_to_use:.2f}x")
+    st.success(f"✅ Trade Executed! Units: {units_to_use:,.8f} | Leverage: {lev_to_use:.2f}x | Order: {order_type}")
 
 # --- Streamlit Application Layout ---
 def app():
@@ -273,7 +290,7 @@ def app():
 
     # --- Column 1: Inputs and History ---
     with col1:
-        st.subheader("POSITION SIZING")
+        st.subheader("POSITION SIZING & ORDER ENTRY")
         
         # Sizing Inputs
         st.markdown("#### Trade Parameters")
@@ -281,22 +298,28 @@ def app():
         
         col_type_choice, col_sl_choice = st.columns(2)
         with col_type_choice:
-            # Position size/lot size ye 2 option rkhne hai
             units_type = st.radio("Sizing Method:", ["Position Size / Units", "Lot Size / Units"], index=0, key="units_type")
         
         with col_sl_choice:
-            # same sl ke liye sl points/ sl % movement
             sl_type = st.radio("Stop Loss Method:", ["SL Points", "SL % Movement"], index=0, key="sl_type")
 
         symbol = st.text_input("Symbol:", "BTCUSD").strip().upper()
+        
+        # New: Order Type Selection
+        order_type = st.selectbox("Order Type:", ["MARKET ORDER", "LIMIT ORDER", "STOP LIMIT ORDER", "STOP MARKET ORDER"])
+
         entry = st.number_input("Entry Price:", min_value=0.0000001, value=27050.00, format="%.8f", key="entry")
 
+        side = st.selectbox("Side:", ["LONG", "SHORT"])
+
+        # SL Input based on SL Type
         sl = 0.0
         sl_value = 0.0 # Will store either SL distance in points or SL percentage
         
         if sl_type == "SL Points":
+            # Input is the SL price, then we calculate the distance/value
             sl = st.number_input("Stop Loss (SL) Price:", min_value=0.0000001, value=26950.00, format="%.8f", key="sl_price")
-            sl_value = abs(entry - sl) 
+            sl_value = abs(entry - sl) # Store distance in points
             if sl_value == 0:
                 st.warning("SL Price must be different from Entry Price.")
                 
@@ -304,20 +327,37 @@ def app():
             sl_value = st.number_input("Stop Loss (SL) % Movement:", min_value=0.01, value=0.5, format="%.2f", key="sl_percent")
             # Calculate a dummy SL price for logging (assuming long for simplicity in price calculation)
             if entry > 0:
-                sl = entry * (1 - sl_value / 100.0)
-            
-        side = st.selectbox("Side:", ["LONG", "SHORT"])
+                if side == "LONG":
+                    sl = entry * (1 - sl_value / 100.0)
+                else: # SHORT
+                    sl = entry * (1 + sl_value / 100.0)
+        
+        # New: Take Profit (TP) inputs
+        st.markdown("---")
+        st.markdown("#### Take Profit (TP) Configuration")
+        tp1_price = st.number_input("TP 1 Price:", min_value=0.0, value=27200.00, format="%.8f", key="tp1_price")
+        tp1_percent = st.number_input("TP 1 % of Position:", min_value=0, max_value=100, value=70, step=5, key="tp1_percent")
+        
+        remaining_percent = 100 - tp1_percent
+        tp2_price = st.number_input("TP 2 Price (Full Exit):", min_value=0.0, value=27350.00, format="%.8f", key="tp2_price")
+        st.info(f"TP 2 will exit the **remaining {remaining_percent}%** of the position.")
 
-        # Recalculation
+        # Structure TP data for logging
+        tp_list = []
+        if tp1_price > 0 and tp1_percent > 0:
+            tp_list.append({"price": tp1_price, "percentage": tp1_percent})
+        if tp2_price > 0 and remaining_percent > 0:
+            tp_list.append({"price": tp2_price, "percentage": remaining_percent})
+
+
+        # Recalculation (using sl_type and sl_value now)
         units, leverage, notional, unutilized_capital, max_leverage, info_text = calculate_position_sizing(
-            balance, symbol, entry, sl, sl_type, sl_value, units_type
+            balance, symbol, entry, sl_type, sl_value
         )
         
         st.markdown("---")
         st.subheader("Suggested Position (1% Risk)")
         
-        # Max Leverage is displayed within the info box in the calculation function for better context
-
         st.info(f"**Suggested Units:** `{units:,.8f}`")
         st.info(f"**Suggested Leverage:** `{leverage:.2f}x`")
         
@@ -340,14 +380,9 @@ def app():
             user_lev = st.number_input("Override Leverage (0 to use Suggested):", min_value=0.0, value=0.0, format="%.2f")
 
         if st.button("EXECUTE TRADE (1% RISK)", use_container_width=True, key="execute"):
-            execute_trade_action(balance, symbol, side, entry, sl, units, leverage, user_units, user_lev, sl_type, sl_value)
+            execute_trade_action(balance, symbol, side, entry, sl, units, leverage, user_units, user_lev, sl_type, sl_value, order_type, tp_list)
 
-        if st.button("RESET DAILY LIMITS", use_container_width=True, key="reset"):
-            # Note: This reset only clears today's limits in the session
-            st.session_state.stats[datetime.utcnow().date().isoformat()] = {"total": 0, "by_symbol": {}}
-            st.session_state.trades = [t for t in st.session_state.trades if t.get("date") != datetime.utcnow().date().isoformat()]
-            st.success("Today's limits and trade log have been reset.")
-            st.rerun()
+        # Removed the 'RESET DAILY LIMITS' button as requested
 
         st.markdown("---")
         st.subheader("TODAY'S TRADE LOG")
@@ -356,13 +391,17 @@ def app():
         today_trades = [t for t in st.session_state.trades if t.get("date") == datetime.utcnow().date().isoformat()]
         if today_trades:
             df_history = pd.DataFrame(today_trades)
-            df_history = df_history[["time", "symbol", "side", "units", "leverage", "notional"]]
-            df_history.columns = ["Time", "Symbol", "Side", "Units", "Leverage", "Notional ($)"]
+            # Added 'order_type' and 'take_profits'
+            df_history = df_history[["time", "symbol", "side", "order_type", "entry", "units", "leverage", "notional", "take_profits"]]
+            df_history.columns = ["Time", "Symbol", "Side", "Order Type", "Entry Price", "Units", "Leverage", "Notional ($)", "TPs"]
             
             # Apply color coding to the 'Side' column
             def color_side(val):
                 color = '#00cc77' if val == 'LONG' else '#ff4d4d'
                 return f'background-color: {color}; color: white'
+
+            # Format the TPs column for better display
+            df_history['TPs'] = df_history['TPs'].apply(lambda x: ' / '.join([f"TP{i+1}: ${tp['price']:,.2f} ({tp['percentage']}%)" for i, tp in enumerate(x)]))
 
             st.dataframe(df_history.style.applymap(color_side, subset=['Side']), use_container_width=True, hide_index=True)
         else:
