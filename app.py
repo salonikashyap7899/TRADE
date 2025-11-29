@@ -18,7 +18,6 @@ DEFAULT_SL_PERCENT_BUFFER = 0.2
 
 def initialize_session_state():
     """Initializes Streamlit session state for data persistence."""
-    # Use st.session_state to hold all application data
     if 'trades' not in st.session_state:
         st.session_state.trades = []
     if 'stats' not in st.session_state:
@@ -34,7 +33,7 @@ def calculate_unutilized_capital(balance):
     # Find all trades logged today
     today_trades = [t for t in st.session_state.trades if t.get("date") == today]
     
-    # Sum the notional value (effectively the margin/capital tied up) of today's trades
+    # Sum the capital tied up (Notional / Leverage)
     used_capital = sum(t.get("notional", 0) / t.get("leverage", 1) for t in today_trades)
     
     # Unutilized capital is the total balance minus the capital used for today's trades
@@ -87,7 +86,7 @@ def plot_candlestick_chart(data):
         returnfig=True,
         figratio=(10, 6)
     )
-    plt.close(fig) # Important: Close the figure to free memory
+    plt.close(fig) 
     return fig
 
 # --- Core Logic (Recalculation and Execution) ---
@@ -95,6 +94,7 @@ def plot_candlestick_chart(data):
 def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value, units_type):
     """
     Calculates suggested units and leverage based on selected SL type (points or %).
+    Enforces risk and Max Leverage rules.
     """
     unutilized_capital = calculate_unutilized_capital(balance)
     risk_amount = (unutilized_capital * RISK_PERCENT) / 100.0
@@ -104,50 +104,56 @@ def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value, uni
     distance = 0.0
     max_leverage = 0.0
     
+    # Check for minimal inputs before calculation
+    if unutilized_capital <= 0 or entry <= 0:
+         return 0, 0, 0, 0, 0, "⚠️ INPUT ERROR: Check Balance/Trades or Entry Price."
+    
     # 1. Calculate SL Distance (Points) and Position Units
     if sl_type == "SL Points":
         distance = abs(entry - sl)
-        # Apply the Lot Size/Units formula: (1% of unutilized capital) / (SL points + 20 points)
+        
+        # Formula: (1% of unutilised capital) / (Sl points + 20 points)
         effective_sl_distance = distance + DEFAULT_SL_POINTS_BUFFER
         
         if effective_sl_distance > 0:
             units = risk_amount / effective_sl_distance
             
+            # Calculate leverage required for this position
+            notional = units * entry
+            leverage = notional / unutilized_capital
+            if leverage < 1: leverage = 1.0
+            # Round up to the nearest 0.5x
+            leverage = ceil(leverage * 2) / 2.0
+            
     elif sl_type == "SL % Movement":
         
-        # SL Value is a percentage, convert it to a decimal (e.g., 0.5% -> 0.005)
-        sl_percent = sl_value / 100.0
+        # SL Value is a percentage (e.g., 0.5), convert to decimal for calculation (0.005)
+        sl_percent_decimal = sl_value / 100.0
         
-        # Apply the SL % Movement formula: (1% of unutilized capital) / (SL% movement + 0.2%)
-        effective_sl_percent = sl_percent + (DEFAULT_SL_PERCENT_BUFFER / 100.0)
+        # Formula: (1% of Unutilised capital) / (Sl% movement + 0.2%)
+        effective_sl_percent_decimal = sl_percent_decimal + (DEFAULT_SL_PERCENT_BUFFER / 100.0)
         
-        if effective_sl_percent > 0:
-            # Position Units = (Risk Amount) / (Effective SL % * Entry Price)
-            # Risk Amount = Units * (Effective SL % * Entry Price)
-            units = risk_amount / (effective_sl_percent * entry)
+        if effective_sl_percent_decimal > 0:
+            # Position Units: Risk Amount / (Effective SL % * Entry Price)
+            units = risk_amount / (effective_sl_percent_decimal * entry)
             
-            # Max Leverage is also calculated here
+            # Max Leverage is calculated here: 100 / SL % movement
             max_leverage = 100.0 / sl_value
             
-
-    # 2. Final calculations (Notional and Leverage)
-    if units > 0:
-        notional = units * entry
-        leverage = notional / unutilized_capital
-        if leverage < 1: leverage = 1.0
-        # Round up to the nearest 0.5x, but use a maximum of 100x if Max Leverage applies
-        leverage = ceil(leverage * 2) / 2.0
-        
-        if max_leverage > 0 and leverage > max_leverage:
-            leverage = max_leverage # Limit leverage to the calculated Max Leverage
-
-    else:
+            # Suggested Leverage is defined as the Max Leverage
+            leverage = max_leverage
+            
+            # Calculate notional for info text
+            notional = units * entry
+            
+    else: # Should not happen, but a safe guard
         notional = 0.0
         units = 0.0
         leverage = 1.0
         max_leverage = 0.0
 
-    # 3. Prepare Info Text
+
+    # 2. Prepare Info Text
     today = datetime.utcnow().date().isoformat()
     stats = st.session_state.stats.get(today, {"total": 0, "by_symbol": {}})
     total = stats.get("total", 0)
@@ -159,27 +165,27 @@ def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value, uni
     if sl_type == "SL Points":
         info_text += f"SL Distance: {distance:.8f} points<br>"
         info_text += f"SL Points (w/ Buffer): {distance + DEFAULT_SL_POINTS_BUFFER:.8f}<br>"
+        info_text += f"Position Notional: ${notional:,.2f}<br>"
     elif sl_type == "SL % Movement":
         info_text += f"SL % (w/ Buffer): {sl_value + DEFAULT_SL_PERCENT_BUFFER:.2f}%<br>"
-        if max_leverage > 0:
-            info_text += f"**MAX LEVERAGE:** {max_leverage:.2f}x<br>"
+        info_text += f"**MAX LEVERAGE:** <span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span><br>"
+        info_text += f"Position Notional: ${notional:,.2f}<br>"
 
-    info_text += f"Position Notional: ${notional:,.2f}<br>"
     info_text += f"<br>DAILY LIMIT: {total}/{DAILY_MAX_TRADES} trades used. Symbol ({symbol}) limit: {sym_count}/{DAILY_MAX_PER_SYMBOL} used."
     
-    if units == 0 or unutilized_capital == 0:
-        return 0, 0, 0, 0, 0, "⚠️ INPUT ERROR: Check Entry, Stop Loss, and Balance/Trades."
+    if units == 0:
+        return 0, 0, 0, 0, 0, "⚠️ INPUT ERROR: Cannot calculate position size. Check SL distance/percentage."
         
     return units, leverage, notional, unutilized_capital, max_leverage, info_text
 
 def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, suggested_lev, user_units, user_lev, sl_type, sl_value):
-    """Performs validation and logs the trade (Reused PyQt logic)."""
+    """Performs validation and logs the trade."""
     today = datetime.utcnow().date().isoformat()
     stats = st.session_state.stats.get(today, {"total": 0, "by_symbol": {}})
     total = stats.get("total", 0)
     sym_count = stats.get("by_symbol", {}).get(symbol, 0)
     
-    # 1. Validation Checks
+    # 1. Validation Checks (Daily & Symbol Limits)
     if total >= DAILY_MAX_TRADES:
         st.error(f"Daily max trades reached ({DAILY_MAX_TRADES}).")
         return
@@ -190,22 +196,25 @@ def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, sugg
     units_to_use = user_units if user_units > 0 else suggested_units
     lev_to_use = user_lev if user_lev > 0 else suggested_lev
     
-    # Recalculate based on current state to get validation numbers
-    _, _, _, unutilized_capital, max_leverage, _ = calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value, "")
+    # Recalculate suggested numbers for comparison
+    suggested_units_check, suggested_lev_check, _, unutilized_capital, _, _ = calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value, "")
 
     # Check for unit override exceeding suggested units (1% risk)
-    if units_to_use > suggested_units + 1e-9:
-        st.warning(f"Override units ({units_to_use:,.8f}) exceed suggested units ({suggested_units:,.8f}) based on 1% risk. Trade Blocked.")
+    if units_to_use > suggested_units_check + 1e-9:
+        st.warning(f"Override units ({units_to_use:,.8f}) exceed suggested units ({suggested_units_check:,.8f}) based on 1% risk. Trade Blocked.")
         return
         
     # Check for leverage override exceeding suggested or max leverage
-    if lev_to_use > suggested_lev + 1e-9:
-        # Check against suggested_lev (which already accounts for max_leverage limit)
-        st.warning(f"Override leverage ({lev_to_use:.2f}x) exceeds suggested leverage ({suggested_lev:.2f}x). Trade Blocked.")
+    if lev_to_use > suggested_lev_check + 1e-9:
+        # suggested_lev_check already incorporates the max leverage cap
+        st.warning(f"Override leverage ({lev_to_use:.2f}x) exceeds suggested leverage ({suggested_lev_check:.2f}x). Trade Blocked.")
         return
     
-    if lev_to_use * (units_to_use * entry) / lev_to_use > unutilized_capital and unutilized_capital > 0:
-        st.warning("Position notional/margin exceeds unutilized capital. Trade Blocked.")
+    # Check if the margin required for the position exceeds unutilized capital
+    notional_to_use = units_to_use * entry
+    margin_required = notional_to_use / lev_to_use
+    if margin_required > unutilized_capital + 1e-9:
+        st.warning(f"Margin required (${margin_required:,.2f}) exceeds unutilized capital (${unutilized_capital:,.2f}). Trade Blocked.")
         return
     
     # 2. Log Trade
@@ -219,7 +228,7 @@ def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, sugg
         "entry": entry,
         "stop_loss": sl,
         "units": units_to_use,
-        "notional": units_to_use * entry,
+        "notional": notional_to_use,
         "leverage": lev_to_use
     }
 
@@ -238,7 +247,7 @@ def app():
     st.set_page_config(layout="wide", page_title="Professional Risk Manager")
     initialize_session_state()
 
-    # Custom styling for the title
+    # Custom styling
     st.markdown("""
         <style>
         .stButton>button {
@@ -272,23 +281,28 @@ def app():
         
         col_type_choice, col_sl_choice = st.columns(2)
         with col_type_choice:
+            # Position size/lot size ye 2 option rkhne hai
             units_type = st.radio("Sizing Method:", ["Position Size / Units", "Lot Size / Units"], index=0, key="units_type")
         
         with col_sl_choice:
+            # same sl ke liye sl points/ sl % movement
             sl_type = st.radio("Stop Loss Method:", ["SL Points", "SL % Movement"], index=0, key="sl_type")
 
         symbol = st.text_input("Symbol:", "BTCUSD").strip().upper()
         entry = st.number_input("Entry Price:", min_value=0.0000001, value=27050.00, format="%.8f", key="entry")
 
         sl = 0.0
-        sl_value = 0.0
+        sl_value = 0.0 # Will store either SL distance in points or SL percentage
         
         if sl_type == "SL Points":
             sl = st.number_input("Stop Loss (SL) Price:", min_value=0.0000001, value=26950.00, format="%.8f", key="sl_price")
-            sl_value = abs(entry - sl) # sl_value will store the distance in points
+            sl_value = abs(entry - sl) 
+            if sl_value == 0:
+                st.warning("SL Price must be different from Entry Price.")
+                
         else: # SL % Movement
             sl_value = st.number_input("Stop Loss (SL) % Movement:", min_value=0.01, value=0.5, format="%.2f", key="sl_percent")
-            # Calculate a dummy SL price for logging, assuming long
+            # Calculate a dummy SL price for logging (assuming long for simplicity in price calculation)
             if entry > 0:
                 sl = entry * (1 - sl_value / 100.0)
             
@@ -300,11 +314,10 @@ def app():
         )
         
         st.markdown("---")
-        st.subheader("Suggested Position")
+        st.subheader("Suggested Position (1% Risk)")
         
-        if sl_type == "SL % Movement" and max_leverage > 0:
-            st.markdown(f"**Max Leverage Allowed:** `<span style='color: #ff4d4d; font-weight: bold;'>{max_leverage:.2f}x</span>`", unsafe_allow_html=True)
-            
+        # Max Leverage is displayed within the info box in the calculation function for better context
+
         st.info(f"**Suggested Units:** `{units:,.8f}`")
         st.info(f"**Suggested Leverage:** `{leverage:.2f}x`")
         
