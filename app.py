@@ -92,10 +92,12 @@ def plot_candlestick_chart(data):
 
 # --- Core Logic (Recalculation and Execution) ---
 
-def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value):
+def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
     """
     Calculates suggested units and leverage based on selected SL type (points or %).
     Enforces risk and Max Leverage rules.
+    
+    NOTE: Removed unused 'sl' and 'units_type' parameters to fix TypeError.
     """
     unutilized_capital = calculate_unutilized_capital(balance)
     risk_amount = (unutilized_capital * RISK_PERCENT) / 100.0
@@ -104,6 +106,7 @@ def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value):
     leverage = 1.0
     distance = 0.0
     max_leverage = 0.0
+    notional = 0.0 # Initialize notional
     
     # Check for minimal inputs before calculation
     if unutilized_capital <= 0 or entry <= 0:
@@ -158,10 +161,7 @@ def calculate_position_sizing(balance, symbol, entry, sl, sl_type, sl_value):
             notional = units * entry
             
     else: # Should not happen, but a safe guard
-        notional = 0.0
-        units = 0.0
-        leverage = 1.0
-        max_leverage = 0.0
+        pass
 
 
     # 2. Prepare Info Text
@@ -212,6 +212,7 @@ def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, sugg
     lev_to_use = user_lev if user_lev > 0 else suggested_lev
     
     # Recalculate suggested numbers for comparison
+    # CORRECTED CALL: Passing only the 5 required arguments
     suggested_units_check, suggested_lev_check, _, unutilized_capital, _, _ = calculate_position_sizing(balance, symbol, entry, sl_type, sl_value)
 
     # Check for unit override exceeding suggested units (1% risk)
@@ -313,19 +314,19 @@ def app():
         side = st.selectbox("Side:", ["LONG", "SHORT"])
 
         # SL Input based on SL Type
-        sl = 0.0
-        sl_value = 0.0 # Will store either SL distance in points or SL percentage
+        sl = 0.0 # Will store the SL Price for trade logging
+        sl_value = 0.0 # Will store either SL distance in points or SL percentage for calculation
         
         if sl_type == "SL Points":
             # Input is the SL price, then we calculate the distance/value
             sl = st.number_input("Stop Loss (SL) Price:", min_value=0.0000001, value=26950.00, format="%.8f", key="sl_price")
-            sl_value = abs(entry - sl) # Store distance in points
+            sl_value = abs(entry - sl) # Store distance in points for calculation
             if sl_value == 0:
                 st.warning("SL Price must be different from Entry Price.")
                 
         else: # SL % Movement
             sl_value = st.number_input("Stop Loss (SL) % Movement:", min_value=0.01, value=0.5, format="%.2f", key="sl_percent")
-            # Calculate a dummy SL price for logging (assuming long for simplicity in price calculation)
+            # Calculate SL price for logging (based on side)
             if entry > 0:
                 if side == "LONG":
                     sl = entry * (1 - sl_value / 100.0)
@@ -350,7 +351,8 @@ def app():
             tp_list.append({"price": tp2_price, "percentage": remaining_percent})
 
 
-        # Recalculation (using sl_type and sl_value now)
+        # Recalculation
+        # CORRECTED CALL: Only passing the 5 required arguments
         units, leverage, notional, unutilized_capital, max_leverage, info_text = calculate_position_sizing(
             balance, symbol, entry, sl_type, sl_value
         )
@@ -380,9 +382,8 @@ def app():
             user_lev = st.number_input("Override Leverage (0 to use Suggested):", min_value=0.0, value=0.0, format="%.2f")
 
         if st.button("EXECUTE TRADE (1% RISK)", use_container_width=True, key="execute"):
+            # Ensure the call is correct (sl is the final price for logging)
             execute_trade_action(balance, symbol, side, entry, sl, units, leverage, user_units, user_lev, sl_type, sl_value, order_type, tp_list)
-
-        # Removed the 'RESET DAILY LIMITS' button as requested
 
         st.markdown("---")
         st.subheader("TODAY'S TRADE LOG")
