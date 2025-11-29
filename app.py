@@ -304,7 +304,7 @@ def app():
         st.subheader("POSITION SIZING & ORDER ENTRY")
         
         # Sizing Inputs
-        st.markdown("Trade Parameters")
+        st.markdown("#### Trade Parameters")
         balance = st.number_input("Total Balance ($):", min_value=1.00, value=DEFAULT_BALANCE, step=100.00, format="%.2f", key="balance")
         
         col_type_choice, col_sl_choice = st.columns(2)
