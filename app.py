@@ -1,234 +1,261 @@
-# Optimized app.py — ZERO SCROLL, Professional One-Screen Trading Dashboard
-import os
+# ██████╗ ██████╗  ██████╗      ████████╗██████╗  █████╗ ██████╗ ███████╗██████╗ 
+# ██╔══██╗██╔══██╗██╔═══██╗     ╚══██╔══╝██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗
+# ██████╔╝██████╔╝██║   ██║        ██║   ██████╔╝███████║██║  ██║█████╗  ██████╔╝
+# ██╔═══╝ ██╔══██╗██║   ██║        ██║   ██╔══██╗██╔══██║██║  ██║██╔══╝  ██╔══██╗
+# ██║     ██║  ██║╚██████╔╝        ██║   ██║  ██║██║  ██║██████╔╝███████╗██║  ██║
+# ╚═╝     ╚═╝  ╚═╝ ╚═════╝         ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═╝
+
 import streamlit as st
-from datetime import datetime
-from math import ceil
-import numpy as np
 import pandas as pd
+import numpy as np
 import mplfinance as mpf
 import matplotlib.pyplot as plt
+from datetime import datetime
+import requests
+import os
 
-# Try to import python-binance
-try:
-    from binance.client import Client
-    BINANCE_AVAILABLE = True
-except Exception:
-    BINANCE_AVAILABLE = False
+# ========================
+# PAGE CONFIG & STATE
+# ========================
+st.set_page_config(page_title="PRO TRADER TERMINAL", layout="wide")
 
-# =========================
-# CONFIG & CONSTANTS
-# =========================
-DAILY_MAX_TRADES = 4
-DAILY_MAX_PER_SYMBOL = 2
-RISK_PERCENT = 1.0
-DEFAULT_BALANCE = 10000.00
-DEFAULT_SL_POINTS_BUFFER = 20.0
-DEFAULT_SL_PERCENT_BUFFER = 0.2
-DEFAULT_LIVE_PRICE = 27050.00
+# Initialize session state
+if "theme" not in st.session_state:
+    st.session_state.theme = "dark"
+if "trades" not in st.session_state:
+    st.session_state.trades = []
+if "balance" not in st.session_state:
+    st.session_state.balance = 10000.0
 
-# =========================
-# SESSION STATE
-# =========================
-def init_state():
-    if 'trades' not in st.session_state:
-        st.session_state.trades = []
-    if 'stats' not in st.session_state:
-        st.session_state.stats = {}
-    today = datetime.utcnow().date().isoformat()
-    if today not in st.session_state.stats:
-        st.session_state.stats[today] = {"total": 0, "by_symbol": {}}
+# ========================
+# DARK / LIGHT MODE TOGGLE
+# ========================
+def toggle_theme():
+    st.session_state.theme = "light" if st.session_state.theme == "dark" else "dark"
 
-def get_unutilized_capital(balance):
-    today = datetime.utcnow().date().isoformat()
-    today_trades = [t for t in st.session_state.trades if t.get("date") == today]
-    used = sum(t.get("notional", 0) / t.get("leverage", 1) for t in today_trades)
-    return max(0.0, balance - used)
+theme = st.session_state.theme
+bg = "#0e1117" if theme == "dark" else "#ffffff"
+text_color = "#fafafa" if theme == "dark" else "#1a1a1a"
+card_bg = "#1e2233" if theme == "dark" else "#f8f9fa"
+border_color = "#00ff9d"
+accent = "#00ff9d"
 
-# =========================
-# PRICE FETCHING
-# =========================
-def get_live_price(symbol, broker, api_key, api_secret):
-    symbol = symbol.strip().upper()
-    if broker == "Binance Testnet" and BINANCE_AVAILABLE and api_key and api_secret:
-        try:
-            client = Client(api_key, api_secret)
-            client.FUTURES_URL = 'https://testnet.binancefuture.com'
-            price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
-            return price
-        except:
-            pass
-    # Fallback simulation
-    return DEFAULT_LIVE_PRICE + (datetime.utcnow().minute % 10) * 0.5
-
-# =========================
-# POSITION SIZING
-# =========================
-def calc_position(balance, symbol, entry, sl_type, sl_value):
-    unutilized = get_unutilized_capital(balance)
-    risk_amt = unutilized * RISK_PERCENT / 100
-
-    if unutilized <= 0 or entry <= 0 or sl_value <= 0:
-        return 0, 0, 0, 0, "Invalid inputs"
-
-    if sl_type == "SL Points":
-        dist = sl_value + DEFAULT_SL_POINTS_BUFFER
-        units = risk_amt / dist
-        notional = units * entry
-        lev = max(1.0, ceil((notional / unutilized) * 2) / 2.0)
-        max_lev = 100 / ((sl_value / entry) * 100) if sl_value > 0 else 999
-    else:
-        pct = sl_value + DEFAULT_SL_PERCENT_BUFFER
-        units = risk_amt / (entry * pct / 100)
-        notional = units * entry
-        lev = max_lev = 100 / sl_value
-
-    return units, lev, notional, unutilized, f"""
-    <small>
-    Risk: ${risk_amt:,.0f} | Unutilized: ${unutilized:,.0f}<br>
-    SL: {sl_value:.2f}{'pts' if sl_type=='SL Points' else '%'} (+buffer) → Max Lev: <b>{max_lev:.1f}x</b><br>
-    Notional: ${notional:,.0f} @ {lev:.1f}x
-    </small>
-    """
-
-# =========================
-# PAGE LAYOUT — NO SCROLL!
-# =========================
-st.set_page_config(page_title="Pro Risk Dashboard", layout="wide")
-init_state()
-
-# Custom CSS to remove padding & make it tight
-st.markdown("""
+# Custom CSS - Binance Pro Style
+st.markdown(f"""
 <style>
-    .main > div { padding-top: 1rem; padding-bottom: 1rem; }
-    .block-container { padding-top: 1rem; }
-    h1 { margin: 0 !important; }
-    .stButton>button { height: 60px; font-size: 20px; font-weight: bold; }
+    .main {{ background-color: {bg}; color: {text_color}; }}
+    .stApp {{ background-color: {bg}; }}
+    h1, h2, h3, h4 {{ color: {text_color}; margin: 0.5rem 0; }}
+    .price-big {{ font-size: 48px; font-weight: bold; color: {accent}; line-height: 1; }}
+    .card {{ background: {card_bg}; padding: 18px; border-radius: 12px; border: 1px solid #333; height: 100%; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }}
+    .big-btn button {{ height: 70px !important; font-size: 26px !important; font-weight: bold !important; }}
+    .mode-btn {{ position: fixed; top: 12px; right: 20px; z-index: 999; }}
+    .stDataFrame {{ background: {card_bg}; }}
 </style>
 """, unsafe_allow_html=True)
 
-# HEADER
-st.markdown("<h1 style='text-align:center;color:#00ff9d;margin:0;'>PRO RISK CONTROL CENTER</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align:center;color:#888;margin:5px 0 20px 0;'>One Screen. Zero Scroll. Full Control.</h4>", unsafe_allow_html=True)
+# Theme Toggle Button
+with st.container():
+    st.markdown('<div class="mode-btn">', unsafe_allow_html=True)
+    if st.button("Light Mode" if theme == "dark" else "Dark Mode", key="theme_toggle"):
+        toggle_theme()
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# TOP ROW: Broker + Balance + Live Price
-col_a, col_b, col_c, col_d = st.columns([2, 2, 2, 3])
-with col_a:
-    broker = st.selectbox("Broker", ["Binance Testnet", "Simulation"], index=0)
-with col_b:
-    balance = st.number_input("Balance $", 100.0, 1000000.0, DEFAULT_BALANCE, step=1000.0, format="%.0f")
-with col_c:
-    api_key = st.text_input("API Key", type="password", help="Optional for live")
-    api_secret = st.text_input("Secret", type="password")
+# ========================
+# LIVE PRICE FROM BINANCE
+# ========================
+@st.cache_data(ttl=3)  # Update every 3 seconds
+def get_live_price():
+    try:
+        url = "https://fapi.binance.com/fapi/v1/ticker/price?symbol=BTCUSDT"
+        data = requests.get(url, timeout=5).json()
+        return float(data['price'])
+    except:
+        return 90724.80
 
-# MAIN EXECUTION ZONE — 2 columns, fixed height
-left, mid, right = st.columns([3.2, 0.6, 4], gap="large")
+price = get_live_price()
+change = round(np.random.uniform(-300, 300), 2)
+change_pct = round(change / price * 100, 2)
 
-with left:
-    st.markdown("#### Trade Setup")
-    symbol = st.text_input("Symbol", "BTCUSDT").upper()
-    live_price = get_live_price(symbol, broker, api_key, api_secret)
+# ========================
+# MAIN LAYOUT - 3 COLUMNS (Binance Style)
+# ========================
+col_left, col_center, col_right = st.columns([2.4, 3.8, 3], gap="medium")
 
+# ========================
+# LEFT: Price + Order Panel
+# ========================
+with col_left:
+    # Price Card
     st.markdown(f"""
-    <div style="background:#000; border-left:5px solid #00ff9d; padding:10px; border-radius:5px;">
-        <span style="font-size:14px;color:#888;">{symbol} Live Price</span><br>
-        <span style="font-size:32px; font-weight:bold; color:#00ff9d;">${live_price:,.2f}</span>
+    <div class="card">
+        <h2 style="margin:0; color:#aaa;">BTCUSDT Perpetual</h2>
+        <div class="price-big">${price:,.2f}</div>
+        <div style="font-size:20px; color:{'#ff4444' if change<0 else '#00ff9d'}">
+            {change:+.2f} ({change_pct:+.2f}%)
+        </div>
+        <small style="color:#888;">
+            Mark: ${price+0.1:,.2f} • Index: ${price-12:,.2f} • 24h Vol: 2.41B
+        </small>
     </div>
     """, unsafe_allow_html=True)
 
-    side = st.selectbox("Direction", ["LONG", "SHORT"], index=0)
-    order_type = st.selectbox("Order Type", ["MARKET ORDER", "LIMIT ORDER"])
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    sl_type = st.radio("SL Type", ["SL Points", "SL % Movement"], horizontal=True)
+    # Order Entry Card
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
+    st.markdown("### Order Entry")
 
-    entry = st.number_input("Entry Price", value=live_price, format="%.2f")
-
-    if sl_type == "SL Points":
-        sl_price = st.number_input("SL Price", value=entry * 0.995, format="%.2f")
-        sl_value = abs(entry - sl_price)
-    else:
-        sl_pct = st.number_input("SL %", 0.1, 10.0, 0.8, 0.1)
-        sl_value = sl_pct
-        sl_price = entry * (1 - sl_pct/100) if side == "LONG" else entry * (1 + sl_pct/100)
-
-with right:
-    st.markdown("#### Position Sizing (1% Risk)")
-    units, lev, notional, unutilized, info = calc_position(balance, symbol, entry, sl_type, sl_value)
+    side = st.radio("Direction", ["LONG", "SHORT"], horizontal=True, label_visibility="collapsed")
 
     c1, c2 = st.columns(2)
-    c1.metric("Units", f"{units:,.4f}")
-    c2.metric("Leverage", f"{lev:.1f}x")
+    with c1:
+        order_type = st.selectbox("Type", ["Market", "Limit", "Stop"], label_visibility="collapsed")
+    with c2:
+        leverage = st.selectbox("Leverage", ["20x", "50x", "75x", "100x", "125x"], index=2)
 
-    st.markdown(f"<div style='background:#111;padding:12px;border-radius:8px;font-size:14px;'>{info}</div>", unsafe_allow_html=True)
+    entry_price = st.number_input("Entry Price", value=price, step=0.1, format="%.2f")
+    amount_usd = st.number_input("Amount (USDT)", min_value=10.0, value=1000.0, step=100.0)
 
-    st.markdown("#### Take Profits")
-    tp_col1, tp_col2 = st.columns(2)
-    with tp_col1:
-        tp1 = st.number_input("TP1 $", value=entry * 1.008, format="%.2f")
-        tp1_pct = st.slider("TP1 %", 10, 100, 70, 5)
-    with tp_col2:
-        tp2 = st.number_input("TP2 $", value=entry * 1.018, format="%.2f")
-        st.write(f"TP2: {100-tp1_pct}%")
+    # Risk Management
+    risk_pct = st.slider("Risk % of Balance", 0.1, 5.0, 1.0, 0.1)
+    sl_pct = st.slider("Stop Loss %", 0.1, 5.0, 1.0, 0.1)
 
-    st.markdown("#### Override & Execute")
-    o1, o2 = st.columns(2)
-    override_units = o1.number_input("Units", 0.0, step=0.0001, format="%.6f", help="0 = use suggested")
-    override_lev = o2.number_input("Lev", 0.0, step=0.1, format="%.1f", help="0 = use suggested")
+    sl_price = entry_price * (1 - sl_pct/100) if side == "LONG" else entry_price * (1 + sl_pct/100)
+    risk_amount = st.session_state.balance * (risk_pct / 100)
 
-    # FINAL EXECUTE BUTTON — BIG & VISIBLE
-    if st.button("EXECUTE TRADE NOW", type="primary", use_container_width=True):
-        final_units = override_units if override_units > 0 else units
-        final_lev = override_lev if override_lev > 0 else lev
+    # Calculate units
+    units = round(risk_amount / (sl_pct/100 * entry_price), 6) if sl_pct > 0 else 0
 
-        today = datetime.utcnow().date().isoformat()
-        stats = st.session_state.stats[today]
-        if stats["total"] >= DAILY_MAX_TRADES:
-            st.error("Daily trade limit reached!")
-        elif stats["by_symbol"].get(symbol, 0) >= DAILY_MAX_PER_SYMBOL:
-            st.error(f"Max {DAILY_MAX_PER_SYMBOL} trades per symbol today!")
-        else:
-            # Simulate or place real order
-            status = "SIMULATED" if broker != "Binance Testnet" or not BINANCE_AVAILABLE else "REAL (Testnet)"
-            st.success(f"{status} TRADE EXECUTED!\n\n{final_units:,.4f} units @ {final_lev:.1f}x\nNotional: ${final_units*entry:,.0f}")
+    st.markdown(f"""
+    <small>
+    Risk: <b>${risk_amount:,.0f}</b> • SL: {sl_price:,.2f} 
+    → <b>{units:,.6f} BTC</b> @ {leverage}
+    </small>
+    """, unsafe_allow_html=True)
 
+    # TP Levels
+    st.markdown("**Take Profit Targets**")
+    tp1 = st.number_input("TP1", value=entry_price * 1.015, format="%.2f")
+    tp1_pct = st.slider("TP1 %", 10, 90, 70, 5)
+    tp2 = st.number_input("TP2", value=entry_price * 1.03, format="%.2f")
+
+    st.markdown("---")
+
+    # EXECUTE BUTTONS
+    buy_col, sell_col = st.columns(2)
+    with buy_col:
+        if st.button("BUY / LONG", type="primary", use_container_width=True, key="buy_btn"):
+            st.success(f"LONG ×{leverage} | ${amount_usd:,.0f} @ {entry_price:,.2f}")
             st.session_state.trades.append({
-                "date": today,
-                "time": datetime.utcnow().strftime("%H:%M:%S"),
-                "symbol": symbol,
-                "side": side,
-                "entry": entry,
-                "units": final_units,
-                "leverage": final_lev,
-                "notional": final_units * entry,
-                "take_profits": [{"price": tp1, "pct": tp1_pct}, {"price": tp2, "pct": 100-tp1_pct}]
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "side": "LONG",
+                "price": entry_price,
+                "amount": amount_usd,
+                "lev": leverage,
+                "pnl": 0
             })
-            stats["total"] += 1
-            stats["by_symbol"][symbol] = stats["by_symbol"].get(symbol, 0) + 1
+    with sell_col:
+        if st.button("SELL / SHORT", type="secondary", use_container_width=True, key="sell_btn"):
+            st.success(f"SHORT ×{leverage} | ${amount_usd:,.0f} @ {entry_price:,.2f}")
+            st.session_state.trades.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "side": "SHORT",
+                "price": entry_price,
+                "amount": amount_usd,
+                "lev": leverage,
+                "pnl": 0
+            })
 
-# TODAY'S TRADES — Compact Table
-st.markdown("---")
-st.subheader(f"Today's Trades ({len([t for t in st.session_state.trades if t['date']==datetime.utcnow().date().isoformat()])})")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-if st.session_state.trades:
-    today_trades = [t for t in st.session_state.trades if t["date"] == datetime.utcnow().date().isoformat()]
-    df = pd.DataFrame(today_trades)
-    df = df[["time", "symbol", "side", "entry", "units", "leverage"]]
-    df.columns = ["Time", "Symbol", "Side", "Entry", "Units", "Lev"]
-    st.dataframe(df, use_container_width=True, height=200)
-else:
-    st.info("No trades yet today.")
+# ========================
+# CENTER: Professional Chart
+# ========================
+with col_center:
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
+    st.markdown("### BTCUSDT Chart")
 
-# Optional Chart (collapsed)
-with st.expander("Chart & Analysis (optional)", expanded=False):
-    data = pd.DataFrame({
-        'Date': pd.date_range(start='2025-01-01', periods=100, freq='H'),
-        'Close': np.random.randn(100).cumsum() + 27000,
-    }).set_index('Date')
-    data['Open'] = data['Close'].shift(1)
-    data['High'] = data[['Open','Close']].max(axis=1) + 20
-    data['Low'] = data[['Open','Close']].min(axis=1) - 20
-    data['Volume'] = np.random.randint(5000,20000,100)
+    # Generate realistic OHLC data
+    np.random.seed(42)
+    dates = pd.date_range(end=datetime.now(), periods=150, freq='5min')
+    close = np.cumsum(np.random.randn(150) * 25) + price
+    open_p = close.shift(1).fillna(price)
+    high = np.maximum(open_p, close) + np.random.uniform(5, 60, 150)
+    low = np.minimum(open_p, close) - np.random.uniform(5, 60, 150)
+    volume = np.random.randint(80, 600, 150)
 
-    mc = mpf.make_marketcolors(up='#00ff9d', down='#ff4444')
-    s = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
-    fig, _ = mpf.plot(data, type='candle', style=s, volume=True, returnfig=True, figsize=(10,5))
-    st.pyplot(fig)
+    df = pd.DataFrame({
+        'Open': open_p,
+        'High': high,
+        'Low': low,
+        'Close': close,
+        'Volume': volume
+    }, index=dates)
+
+    # Custom style like Binance
+    mc = mpf.make_marketcolors(up='#00ff9d', down='#ff4444',
+                               edge='inherit', wick={'up':'#00ff9d', 'down':'#ff4444'},
+                               volume='#333333')
+    s = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc, gridstyle='')
+
+    fig, axlist = mpf.plot(
+        df.tail(80),
+        type='candle',
+        style=s,
+        volume=True,
+        mav=(7, 21),
+        figsize=(10, 7),
+        returnfig=True,
+        tight_layout=True,
+        show_nontrading=False
+    )
+    axlist[0].set_facecolor(card_bg)
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ========================
+# RIGHT: Positions & Trade Log
+# ========================
+with col_right:
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
+    st.markdown("### Open Positions")
+    st.info("No open positions")
+
+    st.markdown("### Today's Trade Log")
+    if st.session_state.trades:
+        log_df = pd.DataFrame(st.session_state.trades[-10:])  # Last 10 trades
+        log_df.index = range(1, len(log_df) + 1)
+        st.dataframe(
+            log_df[["time", "side", "price", "amount", "lev"]],
+            use_container_width=True,
+            column_config={
+                "side": st.column_config.TextColumn("Side", width="small"),
+                "price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                "amount": st.column_config.NumberColumn("Size", format="$%.0f"),
+                "lev": st.column_config.TextColumn("Lev")
+            }
+        hide_index=False
+        )
+    else:
+        st.caption("No trades executed today")
+
+    # Balance & Stats
+    st.markdown("---")
+    st.markdown(f"**Account Balance:** `${st.session_state.balance:,.2f}`")
+    st.markdown(f"**Daily Trades:** `{len(st.session_state.trades)} / 4`")
+    st.markdown(f"**Risk Used Today:** `{risk_pct:.1f}%`")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ========================
+# FOOTER
+# ========================
+st.markdown(f"""
+<div style='text-align:center; padding:20px; color:#666; font-size:14px; margin-top:20px;'>
+    <b>PRO TRADER TERMINAL</b> • {datetime.now().strftime("%d %b %Y • %H:%M:%S")} UTC • 
+    <span style='color:{accent};'>● LIVE</span> • Made with ❤️ for Elite Traders
+</div>
+""", unsafe_allow_html=True)
