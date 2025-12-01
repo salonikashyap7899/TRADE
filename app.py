@@ -342,4 +342,4 @@ def app():
             df_history.columns = ["Time", "Symbol", "Side", "Order Type", "Entry Price", "SL Price", "Units", "Leverage", "Notional ($)", "TPs"]
             
             def color_side(val):
-                color = '#00cc77' if val == 'LONG' else '#ff
+                color = '#00cc77' if val == 'LONG' else '#ff4d4d'
