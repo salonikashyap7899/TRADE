@@ -48,13 +48,11 @@ def get_account_balance(api_key, api_secret):
         balance = float(account['totalWalletBalance'])
         return balance
     except ImportError:
-        # Handle if python-binance is missing
         st.warning("`python-binance` not installed. Using default balance.")
         return DEFAULT_BALANCE
     except Exception as e:
-        # Handle connection errors
         st.error(f"Failed to fetch balance: {e}")
-        return DEFAULT_BALANCE
+          return DEFAULT_BALANCE  
 
 def place_broker_order(symbol, side, entry, sl, units, leverage, order_type, tp_list, api_key, api_secret):
     """Function to connect to the broker and place the order (Testnet)."""
