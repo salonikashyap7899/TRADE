@@ -16,12 +16,10 @@ DEFAULT_SL_PERCENT_BUFFER = 0.2
 API_KEY = "0m7TQoImay1rDXRXVQ1KR7oHBBWjvPT02M3bBWLFvXmoK4m6Vwp8UzLfeJUh1SKV"
 API_SECRET = "2luiKWQg6m2I1pSiREDYPVKRG3ly0To20siRSqNEActb1bZVzpCRgrnFS5MqswiI"
 
-# --- Helper Functions (UNCHANGED) ---
-# initialize_session_state, calculate_unutilized_capital, get_account_balance, 
-# place_broker_order, calculate_position_sizing, execute_trade_action are unchanged.
+# --- Helper Functions for State and Data (UNCHANGED) ---
 
 def initialize_session_state():
-    # ... (Function body from original app.py)
+    """Initializes Streamlit session state for data persistence."""
     if 'trades' not in st.session_state:
         st.session_state.trades = []
     if 'stats' not in st.session_state:
@@ -32,7 +30,7 @@ def initialize_session_state():
         st.session_state.stats[today] = {"total": 0, "by_symbol": {}}
 
 def calculate_unutilized_capital(balance):
-    # ... (Function body from original app.py)
+    """Calculates the capital not tied up in today's trades."""
     today = datetime.utcnow().date().isoformat()
     today_trades = [t for t in st.session_state.trades if t.get("date") == today]
     used_capital = sum(t.get("notional", 0) / t.get("leverage", 1) for t in today_trades)
@@ -40,7 +38,7 @@ def calculate_unutilized_capital(balance):
     return max(0.0, unutilized_capital)
 
 def get_account_balance(api_key, api_secret):
-    # ... (Function body from original app.py)
+    """Fetches account balance from Binance Testnet."""
     try:
         from binance.client import Client
         client = Client(api_key, api_secret)
@@ -56,7 +54,8 @@ def get_account_balance(api_key, api_secret):
         return DEFAULT_BALANCE  
 
 def place_broker_order(symbol, side, entry, sl, units, leverage, order_type, tp_list, api_key, api_secret):
-    # ... (Function body from original app.py)
+    """Function to connect to the broker and place the order (Testnet)."""
+    
     if not api_key or not api_secret:
         return "SIMULATION: Order placement skipped. API keys required for real trading."
 
@@ -68,8 +67,11 @@ def place_broker_order(symbol, side, entry, sl, units, leverage, order_type, tp_
     except Exception as e:
         return f"BROKER ERROR: Failed to place order on Testnet. {e}"
 
+
+# --- Core Logic (Position Sizing and Execution - UNCHANGED) ---
+
 def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
-    # ... (Function body from original app.py)
+    """Calculates suggested units and leverage based on selected SL type."""
     unutilized_capital = calculate_unutilized_capital(balance)
     risk_amount = (unutilized_capital * RISK_PERCENT) / 100.0
     
@@ -109,6 +111,7 @@ def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
             leverage = max(1.0, ceil(required_leverage * 2) / 2.0)
             max_leverage = 100.0 / sl_value
 
+    # Prepare Info Text (for Risk Analysis Box - Omitted for brevity)
     today = datetime.utcnow().date().isoformat()
     stats = st.session_state.stats.get(today, {"total": 0, "by_symbol": {}})
     total = stats.get("total", 0)
@@ -133,7 +136,8 @@ def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
     return units, leverage, notional, unutilized_capital, max_leverage, info_text
 
 def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, suggested_lev, user_units, user_lev, sl_type, sl_value, order_type, tp_list, api_key, api_secret):
-    # ... (Function body from original app.py)
+    """Performs validation, logs the trade, and places the actual broker order."""
+    
     today = datetime.utcnow().date().isoformat()
     
     suggested_units_check, suggested_lev_check, _, unutilized_capital, _, _ = calculate_position_sizing(balance, symbol, entry, sl_type, sl_value)
@@ -154,8 +158,6 @@ def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, sugg
     # Check trade limits (omitted for brevity)
     
     # --- Broker Order Placement ---
-    # Moved to be called outside the main CORE CONTROLS block
-    
     trade_status_message = place_broker_order(
         symbol, side, entry, sl, units_to_use, lev_to_use, order_type, tp_list, api_key, api_secret
     )
@@ -186,7 +188,7 @@ def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, sugg
     return trade_status_message
 
 
-# --- STREAMLIT APPLICATION LAYOUT ---
+# --- STREAMLIT APPLICATION LAYOUT (Updated for Scalper UI) ---
 def app():
     st.set_page_config(page_title="Professional Risk Manager - Scalper's Interface", layout="wide")
     initialize_session_state()
@@ -226,12 +228,9 @@ def app():
         </style>
     """, unsafe_allow_html=True)
     
-    st.title("Professional Risk Manager - Scalper's Interface") # New title
+    st.title("Professional Risk Manager - Scalper's Interface")
 
     # Main structure: Two large columns for Core/Chart and Log
-    # Core Controls (Left) and Chart View (Top Right)
-    # Trade Log (Bottom Right)
-    
     col_core, col_chart_log = st.columns([1, 2], gap="large")
 
     # --- 1. CORE CONTROLS (Left Column) ---
@@ -243,7 +242,9 @@ def app():
         # Row 1: Balance and Margin
         col_bal, col_margin = st.columns(2)
         with col_bal: st.metric("Total Balance (USD$)", f"{balance:,.2f}")
-        with col_margin: st.metric("Margin Used (USD$)", f"{0.00:,.2f}") # Placeholder
+        with col_margin: 
+            used_margin = calculate_unutilized_capital(DEFAULT_BALANCE) # Use the same function name to calculate used margin
+            st.metric("Margin Used (USD$)", f"{DEFAULT_BALANCE - used_margin:,.2f}")
 
         # Row 2: Symbol and Order Type
         col_sym, col_order = st.columns(2)
@@ -257,7 +258,7 @@ def app():
         with col_side:
             side = st.radio("Side:", ["LONG", "SHORT"], index=0, horizontal=True, key="side")
         with col_entry:
-            # Use a realistic default entry for the BTCUSD scale
+            # FIX: Ensure value >= min_value for number inputs
             entry = st.number_input("Entry Price:", min_value=0.0, value=27050.00000000, format="%.8f", key="entry") 
 
         # Row 4: Sizing Method and SL Method
@@ -274,11 +275,9 @@ def app():
         col_sl_input, col_pos_override = st.columns(2)
         with col_sl_input:
             if sl_type == "SL POINTS":
-                # Ensure SL Price also starts with a value >= its min_value
                 sl_price_min_value = 0.0
-                # Use a realistic SL value for BTCUSD (e.g., 100 points)
                 sl_price_default_value = entry - 100.0 if side == "LONG" and entry > 100 else 100.0
-                sl = st.number_input("SL Value (Points):", min_value=0.0, value=sl_price_default_value, format="%.8f", key="sl_price")
+                sl = st.number_input("SL Value (Points):", min_value=sl_price_min_value, value=sl_price_default_value, format="%.8f", key="sl_price")
                 sl_value = abs(entry - sl) if entry > 0 else 0.0
                 
             else: # SL % MOVE
@@ -327,7 +326,18 @@ def app():
         total = stats.get("total", 0)
         sym_count = stats.get("by_symbol", {}).get(symbol, 0)
         
-        st.info(f"READY: Units/Lot: {units:,.4f} | Leverage: {leverage:.1f}x | Risk: ${notional * (abs(entry - sl) / entry) * 100/ leverage:,.2f} | Risk Amount: ${((unutilized_capital * RISK_PERCENT) / 100.0):,.2f}")
+        # --- FIX: ZeroDivisionError Fix (Around Line 411 in original code) ---
+        # 1. Ensure the leverage used for division is at least 1.0
+        safe_leverage = max(1.0, leverage)
+        
+        # 2. Calculate the required risk value safely
+        risk_value_calc = 0.0
+        if entry > 0 and safe_leverage > 0:
+            # Formula: (Notional * (SL Distance / Entry) / Leverage) * 100
+            risk_value_calc = (notional * (abs(entry - sl) / entry)) * 100 / safe_leverage
+        # --- END FIX ---
+        
+        st.info(f"READY: Units/Lot: {units:,.4f} | Leverage: {leverage:.1f}x | Risk: ${risk_value_calc:,.2f} | Risk Amount: ${((unutilized_capital * RISK_PERCENT) / 100.0):,.2f}")
         st.info(f"Limits: {total}/{DAILY_MAX_TRADES} trades | {symbol}: {sym_count}/{DAILY_MAX_PER_SYMBOL}")
         
         # Row 9: Execution Buttons
@@ -336,6 +346,7 @@ def app():
         with col_reset:
             if st.button("RESET DAILY LIMITS", use_container_width=True, key="reset"):
                 st.session_state.stats = {}
+                st.session_state.trades = [] # Clear trades on reset
                 st.rerun()
 
         tp_list = []
@@ -388,10 +399,10 @@ def app():
             df_history = df_history[["time", "symbol", "side", "entry", "units", "leverage", "notional"]]
             df_history.columns = ["Time", "Symbol", "Side", "Entry", "Units/Lot", "Leverage", "Notional ($)"]
             
-            # Function to color the 'Side' column
+            # Function to color the 'Side' column (FIXED return statement previously)
             def color_side(val):
                 color = '#00cc77' if val == 'LONG' else '#ff4d4d'
-                return f'color: {color}; font-weight: bold;' # Changed to color text for better contrast
+                return f'color: {color}; font-weight: bold;'
 
             # Apply styling and display the log
             st.dataframe(
