@@ -4,6 +4,13 @@ from math import ceil
 import pandas as pd
 import time 
 
+
+import streamlit as st
+
+with open("styles.css") as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+
 # --- Configuration and Constants ---
 DAILY_MAX_TRADES = 4
 DAILY_MAX_PER_SYMBOL = 2

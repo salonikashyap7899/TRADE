@@ -1,0 +1,165 @@
+/* ===========================
+   GLOBAL UI THEME
+=========================== */
+body, .stApp {
+    background-color: #0b0f12 !important;
+    color: #e6e6e6 !important;
+    font-family: "Segoe UI", sans-serif;
+}
+
+/* Remove Streamlit white areas */
+.css-18e3th9, .css-1d391kg, .block-container {
+    background: #0b0f12 !important;
+    padding: 0 !important;
+}
+
+/* ===========================
+   PANEL STYLE (Left & Right)
+=========================== */
+.stContainer, .css-1v0mbdj, .css-12w0qpk {
+    background: #0e1419 !important;
+    border: 2px solid #064d64 !important;
+    border-radius: 10px !important;
+    padding: 20px !important;
+    margin-bottom: 20px !important;
+}
+
+/* ===========================
+   HEADERS
+=========================== */
+.section-header {
+    background: #0b5d7a !important;
+    color: #ffffff !important;
+    font-weight: 700 !important;
+    padding: 8px 14px !important;
+    border-radius: 5px !important;
+    border: 1px solid #0ca7d4 !important;
+    font-size: 18px !important;
+    margin-bottom: 14px !important;
+}
+
+/* ===========================
+   TEXT LABELS
+=========================== */
+label, .css-9ycgxx, .stTextInput label, .stSelectbox label {
+    color: #b7d1dc !important;
+    font-weight: 500 !important;
+}
+
+/* ===========================
+   INPUT FIELDS
+=========================== */
+input, textarea, select {
+    background: #101b22 !important;
+    border: 1px solid #0d4a5e !important;
+    color: #00b7ff !important;
+    border-radius: 6px !important;
+}
+
+/* Streamlit text_inputs */
+.stTextInput > div > div > input {
+    background-color: #101b22 !important;
+    color: #00b7ff !important;
+    border: 1px solid #0d4a5e !important;
+}
+
+/* Streamlit selectbox */
+.stSelectbox > div > div {
+    background-color: #101b22 !important;
+    border: 1px solid #0d4a5e !important;
+    color: #00b7ff !important;
+}
+
+/* ===========================
+   BUTTONS
+=========================== */
+.stButton button {
+    background: #00baff !important;
+    color: black !important;
+    font-weight: 700 !important;
+    border: 1px solid #11c0ff !important;
+    padding: 10px 0 !important;
+    border-radius: 6px !important;
+    width: 100% !important;
+}
+
+.stButton button:hover {
+    background: #07c7ff !important;
+    border-color: #12d4ff !important;
+}
+
+/* ===========================
+   SECONDARY BUTTON
+=========================== */
+.btn-secondary button {
+    background: #3a3a3a !important;
+    border: 1px solid #777 !important;
+    color: white !important;
+}
+
+.btn-secondary button:hover {
+    background: #4c4c4c !important;
+}
+
+/* ===========================
+   STATUS BOX
+=========================== */
+.status-box {
+    background: #111d23;
+    padding: 12px;
+    border-radius: 6px;
+    border: 1px solid #1d3a45;
+    color: #a8ffcc;
+    margin-top: 10px;
+    margin-bottom: 15px;
+}
+
+/* ===========================
+   CHART AREA
+=========================== */
+.chart-box {
+    background: #0b0f12 !important;
+    padding: 8px !important;
+    border-radius: 6px !important;
+    border: 1px solid #064d64 !important;
+    margin-bottom: 20px !important;
+}
+
+/* ===========================
+   TRADE LOG TABLE
+=========================== */
+table {
+    border-collapse: collapse !important;
+    width: 100% !important;
+}
+
+thead th {
+    background: #0a5168 !important;
+    color: white !important;
+    border: 1px solid #0ca7d4 !important;
+    padding: 7px !important;
+    font-weight: 650 !important;
+}
+
+tbody td {
+    border: 1px solid #333 !important;
+    padding: 6px !important;
+    color: #e6e6e6 !important;
+}
+
+.long {
+    color: #00ff99 !important;
+    font-weight: bold;
+}
+
+.short {
+    color: #ff5757 !important;
+    font-weight: bold;
+}
+
+/* No trades text */
+.no-trades {
+    opacity: 0.7;
+    font-size: 15px;
+    padding: 8px;
+}
