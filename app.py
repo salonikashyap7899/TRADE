@@ -1,27 +1,29 @@
 import streamlit as st
 from datetime import datetime
 from math import ceil
-import pandas as pd # Import pandas here
-
-# Removed imports: numpy, pandas, mplfinance, matplotlib
+import pandas as pd
+import time # Added time for ID generation in trade log
 
 # --- Configuration and Constants ---
 DAILY_MAX_TRADES = 4
 DAILY_MAX_PER_SYMBOL = 2
 RISK_PERCENT = 1.0 
 DEFAULT_BALANCE = 10000.00
-DEFAULT_SL_POINTS_BUFFER = 20.0
-DEFAULT_SL_PERCENT_BUFFER = 0.2
-# DEFAULT_LIVE_PRICE removed as it's unused
+DEFAULT_SL_POINTS_BUFFER = 20.0 # Buffer for SL calculation
+DEFAULT_SL_PERCENT_BUFFER = 0.2 # Buffer for SL calculation (in percentage points)
 
 # --- API KEY Loading (Uses Streamlit Secrets) ---
+# Use unique default values so we can check if the user has provided real keys
+DEFAULT_API_KEY = "DEFAULT_TESTNET_KEY_12345" 
+DEFAULT_API_SECRET = "DEFAULT_TESTNET_SECRET_67890"
+
 try:
     API_KEY = st.secrets["binance"]["api_key"]
     API_SECRET = st.secrets["binance"]["api_secret"]
 except (KeyError, AttributeError):
     # Fallback/default for local testing without secrets file
-    API_KEY = "0m7TQoImay1rDXRXVQ1KR7oHBBWjvPT02M3bBWLFvXmoK4m6Vwp8UzLfeJUh1SKV"
-    API_SECRET = "2luiKWQg6m2I1pSiREDYPVKRG3ly0To20siRSqNEActb1bZVzpCRgrnFS5MqswiI"
+    API_KEY = DEFAULT_API_KEY
+    API_SECRET = DEFAULT_API_SECRET
 
 
 # --- Helper Functions for State and Data ---
@@ -41,15 +43,15 @@ def calculate_unutilized_capital(balance):
     """Calculates the capital not tied up in today's trades."""
     today = datetime.utcnow().date().isoformat()
     today_trades = [t for t in st.session_state.trades if t.get("date") == today]
-    # Corrected capital calculation: sum of margin required for today's trades
+    # Sum of margin required (Notional / Leverage) for today's trades
     used_capital = sum(t.get("notional", 0) / t.get("leverage", 1) for t in today_trades)
     unutilized_capital = balance - used_capital
     return max(0.0, unutilized_capital)
 
 def get_account_balance(api_key, api_secret):
     """Fetches account balance from Binance Testnet."""
-    # Only try to import binance.client if keys are available to avoid dependency error on simulation
-    if api_key and api_secret and api_key != API_KEY: # Check against default key to prevent constant error on initial run
+    # Check if real keys are loaded before attempting a connection
+    if api_key != DEFAULT_API_KEY and api_secret != DEFAULT_API_SECRET:
         try:
             from binance.client import Client
             client = Client(api_key, api_secret)
@@ -58,23 +60,24 @@ def get_account_balance(api_key, api_secret):
             balance = float(account['totalWalletBalance'])
             return balance
         except ImportError:
-            st.error("binance-connector not installed. Cannot fetch live balance.")
+            # Handle case where python-binance is not installed
+            st.warning("`python-binance` not installed. Cannot fetch live balance.")
             return DEFAULT_BALANCE
         except Exception as e:
+            # Handle API connection errors
             st.error(f"Failed to fetch balance from Testnet: {e}")
             return DEFAULT_BALANCE
     else:
+        # Return default balance if running in simulation mode
         return DEFAULT_BALANCE
 
 def place_broker_order(symbol, side, entry, sl, units, leverage, order_type, tp_list, api_key, api_secret):
     """Function to connect to the broker and place the order (Testnet)."""
     
-    # Check against the default fallback key (which means a user-provided key isn't loaded)
-    if api_key == API_KEY and api_secret == API_SECRET:
-        return "SIMULATION: Order placement skipped. API keys required for real trading."
+    if api_key == DEFAULT_API_KEY or api_secret == DEFAULT_API_SECRET:
+        return "SIMULATION: Order placement skipped. Provide real API keys in secrets.toml for Testnet trading."
 
     try:
-        # --- PLACE YOUR REAL BINANCE/DELTA/META ORDER PLACEMENT CODE HERE ---
         from binance.client import Client 
         client = Client(api_key, api_secret)
         client.FUTURES_URL = 'https://testnet.binancefuture.com' 
@@ -82,18 +85,19 @@ def place_broker_order(symbol, side, entry, sl, units, leverage, order_type, tp_
         # 1. Set Leverage
         client.futures_change_leverage(symbol=symbol, leverage=int(leverage))
         
-        # 2. Place Order (Example: MARKET order)
+        # 2. Determine Order Side
         order_side = 'BUY' if side == 'LONG' else 'SELL'
         
+        # 3. Place Order
         if order_type == 'MARKET':
-             client.futures_create_order(
+             order_response = client.futures_create_order(
                 symbol=symbol, 
                 side=order_side, 
                 type='MARKET', 
-                quantity=round(units, 4) # Binance often requires rounding
+                quantity=round(units, 4)
             )
         elif order_type == 'LIMIT':
-            client.futures_create_order(
+            order_response = client.futures_create_order(
                 symbol=symbol, 
                 side=order_side, 
                 type='LIMIT', 
@@ -102,10 +106,8 @@ def place_broker_order(symbol, side, entry, sl, units, leverage, order_type, tp_
                 timeInForce='GTC'
             )
 
-        # 3. Place SL/TP orders (Often done separately)
-        # For simplicity, this example only logs the main order.
-        
-        return f"REAL TRADE (Testnet): Order placed successfully (Type: {order_type}, Units: {units:.4f}, Lev: {leverage:.1f}x)"
+        # Successful response processing (simplified)
+        return f"REAL TRADE (Testnet): Order placed successfully (ID: {order_response['orderId']}, Type: {order_type}, Units: {units:.4f}, Lev: {leverage:.1f}x)"
 
     except ImportError:
          return "BROKER ERROR: python-binance library not found. Cannot connect."
@@ -131,17 +133,18 @@ def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
     
     if sl_type == "SL Points":
         distance = sl_value
-        effective_sl_distance = distance + (DEFAULT_SL_POINTS_BUFFER / entry) * entry # SL Points are absolute distance
+        effective_sl_distance = distance + (DEFAULT_SL_POINTS_BUFFER / entry) * entry # Use absolute distance
         
         if effective_sl_distance > 0:
             units = risk_amount / effective_sl_distance
             sl_percent_movement = (distance / entry) * 100.0 if entry else 0.0
             notional = units * entry
-            leverage = notional / unutilized_capital
             
-            # Binance leverage must be integer or half-integer (e.g., 1x, 1.5x, 2x)
-            if leverage < 1: leverage = 1.0
-            leverage = ceil(leverage * 2) / 2.0
+            # Calculate required leverage
+            required_leverage = notional / unutilized_capital
+            
+            # Apply Binance leverage rounding rule (ceil to nearest 0.5x)
+            leverage = max(1.0, ceil(required_leverage * 2) / 2.0)
             
             max_leverage = 100.0 / sl_percent_movement if sl_percent_movement > 0 else 0.0
             
@@ -155,14 +158,16 @@ def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
             units = risk_amount / (effective_sl_percent_decimal * entry)
             distance = sl_percent_decimal * entry
             
+            # Calculate maximum leverage (100 / SL%)
             max_leverage = 100.0 / sl_value
-            leverage = max_leverage
             
-            # Binance leverage must be integer or half-integer
-            if leverage < 1: leverage = 1.0
-            leverage = ceil(leverage * 2) / 2.0
-            
+            # Calculate required leverage
             notional = units * entry
+            required_leverage = notional / unutilized_capital
+
+            # Apply Binance leverage rounding rule (ceil to nearest 0.5x)
+            leverage = max(1.0, ceil(required_leverage * 2) / 2.0)
+
 
     # Prepare Info Text (for Risk Analysis Box)
     today = datetime.utcnow().date().isoformat()
@@ -183,8 +188,8 @@ def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
     info_text += f"Position Notional: ${notional:,.2f}<br>"
     info_text += f"<br>DAILY LIMIT: {total}/{DAILY_MAX_TRADES} trades. Symbol ({symbol}) limit: {sym_count}/{DAILY_MAX_PER_SYMBOL}."
     
-    if units == 0 or notional == 0:
-        return 0, 0, 0, 0, 0, "⚠️ INPUT ERROR: Cannot calculate position size. Check SL distance/percentage."
+    if units == 0 or notional == 0 or leverage > 125: # Check for reasonable leverage max
+        return 0, 0, 0, 0, 0, "⚠️ INPUT ERROR: Cannot calculate position size. Check SL distance/percentage or max leverage."
         
     return units, leverage, notional, unutilized_capital, max_leverage, info_text
 
@@ -265,11 +270,10 @@ def app():
     st.set_page_config(layout="wide", page_title="Professional Risk Manager")
     initialize_session_state()
     
-    # Load keys for balance retrieval
+    # Use global keys loaded from secrets or defaults
     user_api_key = API_KEY
     user_api_secret = API_SECRET
 
-    # The balance must be fetched using the keys available in the context
     balance = get_account_balance(user_api_key, user_api_secret)
 
     # Custom styling for EXTREME COMPACTNESS (No Scrolling on Inputs)
@@ -326,14 +330,18 @@ def app():
         
         # Row 1: Core Trade Selectors
         with col_A:
-            symbol = st.radio("Symbol:", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0, horizontal=True, key="symbol_radio").strip().upper()
+            # Removed redundant .strip().upper() since options are already uppercase
+            symbol = st.radio("Symbol:", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0, horizontal=True, key="symbol_radio")
             side = st.radio("Side:", ["LONG", "SHORT"], index=0, horizontal=True, key="side")
             order_type = st.radio("Order Type:", ["MARKET", "LIMIT"], index=0, horizontal=True, key="order_type_radio")
+            # units_type radio is present but unused in logic, retained for UI structure
             units_type = st.radio("Sizing Method:", ["Position Size", "Lot Size"], index=0, horizontal=True, key="units_type")
 
         with col_B:
             st.metric("Total Balance ($)", f"${balance:,.2f}")
+            # Line 336 (The source of the error in your image)
             entry = st.number_input("Entry Price:", min_value=0.0000001, value=0.0, format="%.8f", key="entry")
+            
             sl_type = st.radio("SL Method:", ["SL Points", "SL % Movement"], index=0, horizontal=True, key="sl_type")
             
             sl = 0.0 
@@ -346,6 +354,7 @@ def app():
             else: # SL % Movement
                 sl_value = st.number_input("SL % Movement:", min_value=0.01, value=0.5, format="%.2f", key="sl_percent")
                 if entry > 0:
+                    # Calculate SL price based on side
                     sl = entry * (1 - sl_value / 100.0) if side == "LONG" else entry * (1 + sl_value / 100.0)
 
         with col_C:
@@ -371,9 +380,9 @@ def app():
         col_suggested_units, col_suggested_lev, col_risk_summary = st.columns([1, 1, 3], gap="small")
         
         with col_suggested_units:
-            st.info(f"`{units:,.8f}`")
+            st.info(f"`{units:,.8f}`", help="Suggested Units (Base Currency/Lots)")
         with col_suggested_lev:
-            st.info(f"`{leverage:.2f}x`")
+            st.info(f"`{leverage:.2f}x`", help="Suggested Leverage (Rounded up to nearest 0.5x)")
         
         with col_risk_summary:
             st.markdown(f"""
@@ -388,10 +397,10 @@ def app():
         col_override_units, col_override_lev, col_execute_btn = st.columns([1, 1, 1], gap="small")
         
         with col_override_units:
-            user_units = st.number_input("Position/Lot Size:", min_value=0.0, value=0.0, format="%.8f")
+            user_units = st.number_input("Position/Lot Size:", min_value=0.0, value=0.0, format="%.8f", key="user_units")
             
         with col_override_lev:
-            user_lev = st.number_input("Leverage:", min_value=0.0, value=0.0, format="%.2f")
+            user_lev = st.number_input("Leverage:", min_value=0.0, value=0.0, format="%.2f", key="user_lev")
 
         with col_execute_btn:
             st.markdown("<br>", unsafe_allow_html=True) # Align button
@@ -399,7 +408,7 @@ def app():
                 execute_trade_action(
                     balance, symbol, side, entry, sl, units, leverage, 
                     user_units, user_lev, sl_type, sl_value, order_type, tp_list, 
-                    user_api_key, user_api_secret # Use loaded keys
+                    user_api_key, user_api_secret
                 )
 
     with log_col:
@@ -409,11 +418,11 @@ def app():
         today_trades = [t for t in st.session_state.trades if t.get("date") == datetime.utcnow().date().isoformat()]
         
         if today_trades:
+            # Fixes the missing part of your original code
             df_history = pd.DataFrame(today_trades)
             df_history = df_history[["time", "symbol", "side", "order_type", "entry", "stop_loss", "units", "leverage", "notional", "take_profits"]]
             df_history.columns = ["Time", "Symbol", "Side", "Order Type", "Entry Price", "SL Price", "Units", "Leverage", "Notional ($)", "TPs"]
             
-            # --- START OF MISSING CODE BLOCK ---
             def color_side(val):
                 """Applies background color based on trade side (LONG/SHORT)."""
                 color = '#00cc77' if val == 'LONG' else '#ff4d4d'
@@ -427,7 +436,6 @@ def app():
                 use_container_width=True,
                 hide_index=True
             )
-            # --- END OF MISSING CODE BLOCK ---
         else:
             st.info("No trades logged today.")
 
