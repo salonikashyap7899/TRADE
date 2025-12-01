@@ -40,23 +40,9 @@ def calculate_unutilized_capital(balance):
 
 def get_account_balance(api_key, api_secret):
     """Fetches account balance from Binance Testnet."""
-    try:
-        # Placeholder for binance client setup
-        # from binance.client import Client 
-        # client = Client(api_key, api_secret)
-        # client.FUTURES_URL = 'https://testnet.binancefuture.com'
-        # account = client.futures_account()
-        # balance = float(account['totalWalletBalance'])
-        # return balance
-        return DEFAULT_BALANCE
-    except ImportError:
-        # Keep warning for dependency check
-        st.warning("`python-binance` not installed. Using default balance.")
-        return DEFAULT_BALANCE
-    except Exception as e:
-        st.error(f"Failed to fetch balance: {e}")
-        return DEFAULT_BALANCE  
-
+    # Placeholder implementation
+    return DEFAULT_BALANCE
+  
 def place_broker_order(symbol, side, entry, sl, units, leverage, order_type, tp_list, api_key, api_secret):
     """Function to connect to the broker and place the order (Testnet)."""
     
@@ -96,7 +82,7 @@ def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
             sl_percent_movement = (distance / entry) * 100.0 if entry else 0.0
             notional = units * entry
             leverage = notional / unutilized_capital
-            if leverage < 1: leverage = 1.0 # Ensure min leverage is 1.0
+            if leverage < 1: leverage = 1.0 
             leverage = ceil(leverage * 2) / 2.0
             max_leverage = 100.0 / sl_percent_movement if sl_percent_movement > 0 else 0.0
             
@@ -112,23 +98,16 @@ def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
             notional = units * entry
             required_leverage = notional / unutilized_capital
             leverage = max(1.0, ceil(required_leverage * 2) / 2.0)
-            max_leverage = 100.0 / sl_value # This is the MAX based on SL%
+            max_leverage = 100.0 / sl_value
 
-    # Stats for Info Text (Omitted for brevity, but variables needed)
-    today = datetime.utcnow().date().isoformat()
-    stats = st.session_state.stats.get(today, {"total": 0, "by_symbol": {}})
-    total = stats.get("total", 0)
-    sym_count = stats.get("by_symbol", {}).get(symbol, 0)
-    
-    # Standard info_text generation omitted for cleaner code, returning core metrics
-    info_text = "Calculated successfully." # Placeholder
+    info_text = "Calculated successfully." # Placeholder for return value
     
     if units == 0:
         return 0, 0, 0, 0, 0, "⚠️ INPUT ERROR: Cannot calculate position size. Check SL distance/percentage."
         
     return units, leverage, notional, unutilized_capital, max_leverage, info_text
 
-def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, suggested_lev, user_units, user_lev, sl_type, sl_value, order_type, tp_list, api_key, api_secret):
+def execute_trade_action(balance, symbol, entry, sl, suggested_units, suggested_lev, user_units, user_lev, sl_type, sl_value, order_type, tp_list, api_key, api_secret):
     """Performs validation, logs the trade, and places the actual broker order."""
     
     suggested_units_check, suggested_lev_check, _, unutilized_capital, _, _ = calculate_position_sizing(balance, symbol, entry, sl_type, sl_value)
@@ -146,12 +125,10 @@ def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, sugg
         st.warning(f"Margin required (${margin_required:,.2f}) exceeds unutilized capital (${unutilized_capital:,.2f}). Trade Blocked.")
         return
     
-    # --- Broker Order Placement ---
     trade_status_message = place_broker_order(
         symbol, side, entry, sl, units_to_use, lev_to_use, order_type, tp_list, api_key, api_secret
     )
     
-    # Log Trade
     now = datetime.utcnow()
     trade = {
         "id": int(now.timestamp()*1000),
@@ -183,36 +160,57 @@ def app():
     initialize_session_state()
     balance = get_account_balance(API_KEY, API_SECRET)
 
-    # Custom styling to mimic the dark, boxed aesthetic of the target UI
+    # Custom styling to implement the UI and HIDE ALL SCROLLBARS
     st.markdown("""
         <style>
-        /* General dark theme styling */
-        body { color: white; background-color: #1a1a1a; }
+        /* SCROLLBAR HIDING (Cross-browser) */
         
-        /* Box styling for CORE CONTROLS and CHART VIEW */
+        /* Hide scrollbar for Webkit browsers (Chrome, Safari, Streamlit default) */
+        .main-container .main {
+            overflow: hidden !important; 
+        }
+        .main-container .main-content {
+             overflow: hidden !important; 
+        }
+        ::-webkit-scrollbar {
+            display: none !important;
+            width: 0 !important;
+            height: 0 !important;
+        }
+
+        /* Hide scrollbar for Firefox */
+        html {
+            scrollbar-width: none !important;
+        }
+        
+        /* Hide scrollbar for IE and Edge */
+        body {
+            -ms-overflow-style: none !important;  
+        }
+        
+        /* GENERAL UI STYLING */
+        body { color: white; background-color: #1a1a1a; }
         .box-container {
             border: 1px solid #333333;
             border-radius: 5px;
             padding: 10px;
             margin-bottom: 10px;
-            background-color: #262626; /* Darker background for content boxes */
+            background-color: #262626; 
         }
-        
-        /* Header styling to match the target UI */
         .box-header {
             font-size: 14px;
             font-weight: bold;
-            color: #AAAAAA; /* Grayish color for headers */
+            color: #AAAAAA; 
             border-bottom: 1px solid #444444;
             padding-bottom: 5px;
             margin-bottom: 10px;
         }
+        /* Ensure st.dataframe does not introduce its own scrollbars if possible */
+        .stDataFrame {
+            max-height: 250px; /* Limit height to prevent table scrollbar takeover */
+            overflow: hidden; 
+        }
 
-        /* Streamlit widget tweaks for compactness */
-        div.stRadio > label { padding-right: 15px; }
-        .stMetric > div { font-size: 16px; }
-
-        /* Custom green button style */
         .stButton>button { background-color: #00cc77; color: white; font-weight: bold; }
         </style>
     """, unsafe_allow_html=True)
@@ -247,7 +245,6 @@ def app():
         with col_side:
             side = st.radio("Side:", ["LONG", "SHORT"], index=0, horizontal=True, key="side")
         with col_entry:
-            # FIX: Use a realistic default entry for the BTCUSD scale
             entry = st.number_input("Entry Price:", min_value=0.0, value=27050.00000000, format="%.8f", key="entry") 
 
         # Row 4: Sizing Method and SL Method
@@ -265,9 +262,7 @@ def app():
         with col_sl_input:
             if sl_type == "SL POINTS":
                 sl_price_min_value = 0.0
-                # Use a realistic SL value for BTCUSD (e.g., 100 points)
                 sl_price_default_value = entry - 100.0 if side == "LONG" and entry > 100 else 100.0
-                # FIX: Ensure SL input uses its own key and correct value logic
                 sl = st.number_input("SL Value (Points):", min_value=sl_price_min_value, value=sl_price_default_value, format="%.8f", key="sl_price")
                 sl_value = abs(entry - sl) if entry > 0 else 0.0
                 
@@ -317,16 +312,11 @@ def app():
         total = stats.get("total", 0)
         sym_count = stats.get("by_symbol", {}).get(symbol, 0)
         
-        # --- FIX: ZeroDivisionError Fix ---
-        # 1. Ensure the leverage used for division is at least 1.0
+        # FIX: ZeroDivisionError fix for display
         safe_leverage = max(1.0, leverage)
-        
-        # 2. Calculate the required risk value safely
         risk_value_calc = 0.0
         if entry > 0 and safe_leverage > 0:
-            # Formula: (Notional * (SL Distance / Entry) / Leverage) * 100
             risk_value_calc = (notional * (abs(entry - sl) / entry)) * 100 / safe_leverage
-        # --- END FIX ---
         
         st.info(f"READY: Units/Lot: {units:,.4f} | Leverage: {leverage:.1f}x | Risk: ${risk_value_calc:,.2f} | Risk Amount: ${((unutilized_capital * RISK_PERCENT) / 100.0):,.2f}")
         st.info(f"Limits: {total}/{DAILY_MAX_TRADES} trades | {symbol}: {sym_count}/{DAILY_MAX_PER_SYMBOL}")
@@ -370,7 +360,6 @@ def app():
         st.markdown('<div class="box-container" style="height: 450px;">', unsafe_allow_html=True)
         st.markdown('<div class="box-header">CHART VIEW</div>', unsafe_allow_html=True)
         # Placeholder for the chart visualization
-        #  # Removed as it's purely illustrative.
         st.markdown(f"<p style='text-align: center; color: #888888; margin-top: 150px;'>{symbol} Candlestick Chart Placeholder</p>", unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -388,7 +377,6 @@ def app():
         today_trades = [t for t in st.session_state.trades if t.get("date") == datetime.utcnow().date().isoformat()]
         if today_trades:
             df_history = pd.DataFrame(today_trades)
-            # Match columns to the requested UI
             df_history = df_history[["time", "symbol", "side", "entry", "units", "leverage", "notional"]]
             df_history.columns = ["Time", "Symbol", "Side", "Entry", "Units/Lot", "Leverage", "Notional ($)"]
             
@@ -398,6 +386,7 @@ def app():
                 return f'color: {color}; font-weight: bold;' 
 
             # Apply styling and display the log
+            # The CSS above with max-height on .stDataFrame should prevent internal scroll
             st.dataframe(
                 df_history.style.applymap(
                     color_side, subset=['Side']
