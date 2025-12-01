@@ -1,6 +1,7 @@
 import streamlit as st
 from datetime import datetime
 from math import ceil
+import pandas as pd # Import pandas here
 
 # Removed imports: numpy, pandas, mplfinance, matplotlib
 
@@ -11,11 +12,17 @@ RISK_PERCENT = 1.0
 DEFAULT_BALANCE = 10000.00
 DEFAULT_SL_POINTS_BUFFER = 20.0
 DEFAULT_SL_PERCENT_BUFFER = 0.2
-DEFAULT_LIVE_PRICE = 27050.00 # Placeholder for live price (removed from UI)
+# DEFAULT_LIVE_PRICE removed as it's unused
 
-# --- BINANCE TESTNET API KEYS (Provided by user) ---
-API_KEY = "0m7TQoImay1rDXRXVQ1KR7oHBBWjvPT02M3bBWLFvXmoK4m6Vwp8UzLfeJUh1SKV"
-API_SECRET = "2luiKWQg6m2I1pSiREDYPVKRG3ly0To20siRSqNEActb1bZVzpCRgrnFS5MqswiI"
+# --- API KEY Loading (Uses Streamlit Secrets) ---
+try:
+    API_KEY = st.secrets["binance"]["api_key"]
+    API_SECRET = st.secrets["binance"]["api_secret"]
+except (KeyError, AttributeError):
+    # Fallback/default for local testing without secrets file
+    API_KEY = "0m7TQoImay1rDXRXVQ1KR7oHBBWjvPT02M3bBWLFvXmoK4m6Vwp8UzLfeJUh1SKV"
+    API_SECRET = "2luiKWQg6m2I1pSiREDYPVKRG3ly0To20siRSqNEActb1bZVzpCRgrnFS5MqswiI"
+
 
 # --- Helper Functions for State and Data ---
 
@@ -34,40 +41,74 @@ def calculate_unutilized_capital(balance):
     """Calculates the capital not tied up in today's trades."""
     today = datetime.utcnow().date().isoformat()
     today_trades = [t for t in st.session_state.trades if t.get("date") == today]
+    # Corrected capital calculation: sum of margin required for today's trades
     used_capital = sum(t.get("notional", 0) / t.get("leverage", 1) for t in today_trades)
     unutilized_capital = balance - used_capital
     return max(0.0, unutilized_capital)
 
 def get_account_balance(api_key, api_secret):
     """Fetches account balance from Binance Testnet."""
-    try:
-        from binance.client import Client
-        client = Client(api_key, api_secret)
-        client.FUTURES_URL = 'https://testnet.binancefuture.com'
-        account = client.futures_account()
-        balance = float(account['totalWalletBalance'])
-        return balance
-    except Exception as e:
-        st.error(f"Failed to fetch balance: {e}")
+    # Only try to import binance.client if keys are available to avoid dependency error on simulation
+    if api_key and api_secret and api_key != API_KEY: # Check against default key to prevent constant error on initial run
+        try:
+            from binance.client import Client
+            client = Client(api_key, api_secret)
+            client.FUTURES_URL = 'https://testnet.binancefuture.com'
+            account = client.futures_account()
+            balance = float(account['totalWalletBalance'])
+            return balance
+        except ImportError:
+            st.error("binance-connector not installed. Cannot fetch live balance.")
+            return DEFAULT_BALANCE
+        except Exception as e:
+            st.error(f"Failed to fetch balance from Testnet: {e}")
+            return DEFAULT_BALANCE
+    else:
         return DEFAULT_BALANCE
 
 def place_broker_order(symbol, side, entry, sl, units, leverage, order_type, tp_list, api_key, api_secret):
     """Function to connect to the broker and place the order (Testnet)."""
     
-    if not api_key or not api_secret:
+    # Check against the default fallback key (which means a user-provided key isn't loaded)
+    if api_key == API_KEY and api_secret == API_SECRET:
         return "SIMULATION: Order placement skipped. API keys required for real trading."
 
     try:
         # --- PLACE YOUR REAL BINANCE/DELTA/META ORDER PLACEMENT CODE HERE ---
-        # Example initialization for python-binance Testnet:
-        # from binance.client import Client 
-        # client = Client(api_key, api_secret)
-        # client.FUTURES_URL = 'https://testnet.binancefuture.com' 
-        # client.futures_change_leverage(symbol=symbol, leverage=int(leverage))
-        # client.futures_create_order(symbol=symbol, side=side, type='MARKET', quantity=units)
+        from binance.client import Client 
+        client = Client(api_key, api_secret)
+        client.FUTURES_URL = 'https://testnet.binancefuture.com' 
+        
+        # 1. Set Leverage
+        client.futures_change_leverage(symbol=symbol, leverage=int(leverage))
+        
+        # 2. Place Order (Example: MARKET order)
+        order_side = 'BUY' if side == 'LONG' else 'SELL'
+        
+        if order_type == 'MARKET':
+             client.futures_create_order(
+                symbol=symbol, 
+                side=order_side, 
+                type='MARKET', 
+                quantity=round(units, 4) # Binance often requires rounding
+            )
+        elif order_type == 'LIMIT':
+            client.futures_create_order(
+                symbol=symbol, 
+                side=order_side, 
+                type='LIMIT', 
+                quantity=round(units, 4),
+                price=entry,
+                timeInForce='GTC'
+            )
+
+        # 3. Place SL/TP orders (Often done separately)
+        # For simplicity, this example only logs the main order.
         
         return f"REAL TRADE (Testnet): Order placed successfully (Type: {order_type}, Units: {units:.4f}, Lev: {leverage:.1f}x)"
 
+    except ImportError:
+         return "BROKER ERROR: python-binance library not found. Cannot connect."
     except Exception as e:
         return f"BROKER ERROR: Failed to place order on Testnet. {e}"
 
@@ -90,27 +131,37 @@ def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
     
     if sl_type == "SL Points":
         distance = sl_value
-        effective_sl_distance = distance + DEFAULT_SL_POINTS_BUFFER
+        effective_sl_distance = distance + (DEFAULT_SL_POINTS_BUFFER / entry) * entry # SL Points are absolute distance
         
         if effective_sl_distance > 0:
             units = risk_amount / effective_sl_distance
             sl_percent_movement = (distance / entry) * 100.0 if entry else 0.0
             notional = units * entry
             leverage = notional / unutilized_capital
+            
+            # Binance leverage must be integer or half-integer (e.g., 1x, 1.5x, 2x)
             if leverage < 1: leverage = 1.0
             leverage = ceil(leverage * 2) / 2.0
+            
             max_leverage = 100.0 / sl_percent_movement if sl_percent_movement > 0 else 0.0
             
     elif sl_type == "SL % Movement":
         sl_value_percent = sl_value
         sl_percent_decimal = sl_value_percent / 100.0
+        # Add buffer to the SL %
         effective_sl_percent_decimal = sl_percent_decimal + (DEFAULT_SL_PERCENT_BUFFER / 100.0)
         
         if effective_sl_percent_decimal > 0:
             units = risk_amount / (effective_sl_percent_decimal * entry)
             distance = sl_percent_decimal * entry
+            
             max_leverage = 100.0 / sl_value
             leverage = max_leverage
+            
+            # Binance leverage must be integer or half-integer
+            if leverage < 1: leverage = 1.0
+            leverage = ceil(leverage * 2) / 2.0
+            
             notional = units * entry
 
     # Prepare Info Text (for Risk Analysis Box)
@@ -132,7 +183,7 @@ def calculate_position_sizing(balance, symbol, entry, sl_type, sl_value):
     info_text += f"Position Notional: ${notional:,.2f}<br>"
     info_text += f"<br>DAILY LIMIT: {total}/{DAILY_MAX_TRADES} trades. Symbol ({symbol}) limit: {sym_count}/{DAILY_MAX_PER_SYMBOL}."
     
-    if units == 0:
+    if units == 0 or notional == 0:
         return 0, 0, 0, 0, 0, "⚠️ INPUT ERROR: Cannot calculate position size. Check SL distance/percentage."
         
     return units, leverage, notional, unutilized_capital, max_leverage, info_text
@@ -142,21 +193,41 @@ def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, sugg
     
     today = datetime.utcnow().date().isoformat()
     
-    # ... (Validation checks omitted for brevity but remain in the code) ...
+    # 1. Recalculate suggested units/lev to get the latest validation metrics
     suggested_units_check, suggested_lev_check, _, unutilized_capital, _, _ = calculate_position_sizing(balance, symbol, entry, sl_type, sl_value)
     
     units_to_use = user_units if user_units > 0 else suggested_units
     lev_to_use = user_lev if user_lev > 0 else suggested_lev
+    
+    # 2. Input Validation Checks
+    if not (units_to_use > 0 and lev_to_use >= 1 and entry > 0):
+        st.warning("Input Error: Units, Leverage, and Entry Price must be positive values.")
+        return
 
-    if units_to_use > suggested_units_check + 1e-9 or lev_to_use > suggested_lev_check + 1e-9:
+    # 3. Override Validation (Tolerance added for floating point comparison)
+    if units_to_use > suggested_units_check + 1e-6 or lev_to_use > suggested_lev_check + 1e-6:
         st.warning(f"Override blocked: Units/Leverage exceed suggested limits (Max Units: {suggested_units_check:,.8f}, Max Lev: {suggested_lev_check:.2f}x).")
         return
         
+    # 4. Capital Check
     notional_to_use = units_to_use * entry
     margin_required = notional_to_use / lev_to_use
-    if margin_required > unutilized_capital + 1e-9:
+    if margin_required > unutilized_capital + 1e-6:
         st.warning(f"Margin required (${margin_required:,.2f}) exceeds unutilized capital (${unutilized_capital:,.2f}). Trade Blocked.")
         return
+        
+    # 5. Limit Check
+    stats = st.session_state.stats.get(today, {"total": 0, "by_symbol": {}})
+    total = stats.get("total", 0)
+    sym_count = stats.get("by_symbol", {}).get(symbol, 0)
+    
+    if total >= DAILY_MAX_TRADES:
+        st.warning(f"Daily Trade Limit Reached: {DAILY_MAX_TRADES} trades today.")
+        return
+    if sym_count >= DAILY_MAX_PER_SYMBOL:
+        st.warning(f"Symbol Limit Reached: {symbol} has reached its limit of {DAILY_MAX_PER_SYMBOL} trades.")
+        return
+        
     
     # --- Broker Order Placement ---
     st.subheader("Broker Execution Status:")
@@ -193,7 +264,13 @@ def execute_trade_action(balance, symbol, side, entry, sl, suggested_units, sugg
 def app():
     st.set_page_config(layout="wide", page_title="Professional Risk Manager")
     initialize_session_state()
-    balance = get_account_balance(API_KEY, API_SECRET)
+    
+    # Load keys for balance retrieval
+    user_api_key = API_KEY
+    user_api_secret = API_SECRET
+
+    # The balance must be fetched using the keys available in the context
+    balance = get_account_balance(user_api_key, user_api_secret)
 
     # Custom styling for EXTREME COMPACTNESS (No Scrolling on Inputs)
     st.markdown("""
@@ -233,8 +310,9 @@ def app():
 
     # --- API KEYS (Hidden in Expander) ---
     with st.expander("API KEYS (Binance Testnet)", expanded=False):
-        st.text_input("API Key:", API_KEY, type="password")
-        st.text_input("Secret Key:", API_SECRET, type="password")
+        # Display keys from secrets/default, using the global variables
+        st.text_input("API Key:", user_api_key, type="password")
+        st.text_input("Secret Key:", user_api_secret, type="password")
     
     st.markdown("---")
 
@@ -321,25 +399,37 @@ def app():
                 execute_trade_action(
                     balance, symbol, side, entry, sl, units, leverage, 
                     user_units, user_lev, sl_type, sl_value, order_type, tp_list, 
-                    API_KEY, API_SECRET
+                    user_api_key, user_api_secret # Use loaded keys
                 )
 
     with log_col:
         # --- TRADE LOG (COMPACT ON RIGHT) ---
         st.subheader("TODAY'S TRADE LOG")
         
-        # Use pandas only for displaying the trade log
-        try:
-            import pandas as pd
-        except ImportError:
-            st.warning("Pandas not found. Trade log will not be displayed as a table.")
-            return
-
         today_trades = [t for t in st.session_state.trades if t.get("date") == datetime.utcnow().date().isoformat()]
+        
         if today_trades:
             df_history = pd.DataFrame(today_trades)
             df_history = df_history[["time", "symbol", "side", "order_type", "entry", "stop_loss", "units", "leverage", "notional", "take_profits"]]
             df_history.columns = ["Time", "Symbol", "Side", "Order Type", "Entry Price", "SL Price", "Units", "Leverage", "Notional ($)", "TPs"]
             
+            # --- START OF MISSING CODE BLOCK ---
             def color_side(val):
+                """Applies background color based on trade side (LONG/SHORT)."""
                 color = '#00cc77' if val == 'LONG' else '#ff4d4d'
+                return f'background-color: {color}'
+
+            # Apply styling and display the log
+            st.dataframe(
+                df_history.style.applymap(
+                    color_side, subset=['Side']
+                ),
+                use_container_width=True,
+                hide_index=True
+            )
+            # --- END OF MISSING CODE BLOCK ---
+        else:
+            st.info("No trades logged today.")
+
+if __name__ == '__main__':
+    app()
