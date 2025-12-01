@@ -52,7 +52,7 @@ def get_account_balance(api_key, api_secret):
         return DEFAULT_BALANCE
     except Exception as e:
         st.error(f"Failed to fetch balance: {e}")
-          return DEFAULT_BALANCE  
+        return DEFAULT_BALANCE  
 
 def place_broker_order(symbol, side, entry, sl, units, leverage, order_type, tp_list, api_key, api_secret):
     """Function to connect to the broker and place the order (Testnet)."""
@@ -230,7 +230,8 @@ def app():
         with col_B:
             st.metric("Total Balance ($)", f"${balance:,.2f}")
             
-            # FIX 1: Corrected value to prevent StreamlitValueBelowMinError
+            # 🟢 FIX 1: Corrected value to prevent StreamlitValueBelowMinError
+            # The min_value is > 0, so the value must also be > 0.
             entry = st.number_input("Entry Price:", min_value=0.0000001, value=0.0000001, format="%.8f", key="entry") 
             
             sl_type = st.radio("SL Method:", ["SL Points", "SL % Movement"], index=0, horizontal=True, key="sl_type")
@@ -239,7 +240,10 @@ def app():
             sl_value = 0.0
 
             if sl_type == "SL Points":
-                sl = st.number_input("SL Price:", min_value=0.0000001, value=0.0, format="%.8f", key="sl_price")
+                # Ensure SL Price also starts with a value >= its min_value
+                sl_price_min_value = 0.0000001
+                sl_price_default_value = entry * 0.98 if entry > sl_price_min_value else sl_price_min_value
+                sl = st.number_input("SL Price:", min_value=sl_price_min_value, value=sl_price_default_value, format="%.8f", key="sl_price")
                 sl_value = abs(entry - sl) if entry > 0 else 0.0
                 
             else: # SL % Movement
@@ -248,6 +252,7 @@ def app():
                     sl = entry * (1 - sl_value / 100.0) if side == "LONG" else entry * (1 + sl_value / 100.0)
 
         with col_C:
+            # Ensure all st.number_input widgets have a starting value >= min_value
             tp1_price = st.number_input("TP 1 Price:", min_value=0.0, value=0.0, format="%.8f", key="tp1_price")
             tp1_percent = st.number_input("TP 1 %:", min_value=0, max_value=100, value=70, step=5, key="tp1_percent")
             remaining_percent = 100 - tp1_percent
@@ -317,10 +322,10 @@ def app():
             df_history = df_history[["time", "symbol", "side", "order_type", "entry", "stop_loss", "units", "leverage", "notional", "take_profits"]]
             df_history.columns = ["Time", "Symbol", "Side", "Order Type", "Entry Price", "SL Price", "Units", "Leverage", "Notional ($)", "TPs"]
             
-            # FIX 2: Completed the color_side function definition
+            # 🟢 FIX 2: Added the 'return' statement to the color_side function
             def color_side(val):
                 color = '#00cc77' if val == 'LONG' else '#ff4d4d'
-                return f'background-color: {color}' # <<< The missing 'return' statement
+                return f'background-color: {color}'
 
             # Apply styling and display the log
             st.dataframe(
