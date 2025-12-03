@@ -377,8 +377,7 @@ def app():
         else:
             st.markdown('<p style="color: #AAAAAA; margin-top: 15px;">No trades today.</p>', unsafe_allow_html=True)
 
-        st.markdown('</div>', unsafe_allow_html=True) # Close TRADE LOG container
-
+        st.markdown('</div>', unsafe_allow_html=True) 
 
 if __name__ == '__main__':
     app()
